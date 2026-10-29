@@ -1,0 +1,31 @@
+FROM node:24-alpine AS build
+
+WORKDIR /app
+
+RUN npm install -g pnpm@12.10.1
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml prisma7.config.ts ./
+RUN pnpm install --frozen-lockfile
+COPY prisma ./prisma
+COPY src ./src
+RUN DATABASE_URL=postgresql://build:build@localhost:5432/build pnpm exec prisma generate
+
+FROM build AS migrate
+
+CMD ["sh", "-c", "pnpm exec prisma migrate deploy && node prisma/seed.ts"]
+
+FROM node:24-alpine AS runtime
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+RUN npm install -g pnpm@12.10.1
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --prod --frozen-lockfile
+COPY --from=build --chown=node:node /app/src ./src
+COPY --from=build --chown=node:node /app/prisma ./prisma
+COPY --from=build --chown=node:node /app/prisma7.config.ts ./
+RUN mkdir -p /app/prisma/data/uploads && chown -R node:node /app/prisma/data/uploads
+
+USER node
+EXPOSE 8000
+CMD ["node", "src/index.ts"]

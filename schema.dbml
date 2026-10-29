@@ -1,0 +1,407 @@
+// SmartTour AI - Đà Nẵng
+// DBML PostgreSQL + pgvector (UUID PK/FK)
+
+Project smarttour_ai {
+  database_type: 'PostgreSQL'
+  Note: 'Tro ly du lich ca nhan hoa, thich ung theo su kien tai Da Nang'
+}
+
+Enum user_role {
+  traveler
+  admin
+}
+
+Enum gender {
+  male
+  female
+  other
+}
+
+Enum itinerary_status {
+  draft
+  active
+  completed
+  cancelled
+}
+
+Enum item_type {
+  place
+  restaurant
+  activity
+  event
+  transport
+  rest
+}
+
+Enum sync_status {
+  running
+  success
+  failed
+}
+
+Enum change_type {
+  created
+  updated
+  cancelled
+  deleted
+}
+
+Enum notification_type {
+  event_change
+  weather
+  reminder
+  system
+}
+
+Enum chunk_source {
+  place
+  event
+  article
+  policy
+}
+
+Table users {
+  id uuid [pk, default: `gen_random_uuid()`]
+  email varchar(255) [unique, not null]
+  password_hash varchar(255)
+  full_name varchar(150)
+  avatar_url text [not null]
+  role user_role [not null, default: 'traveler']
+  is_active boolean [not null, default: true]
+  deleted_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    email
+    role
+  }
+}
+
+Table sessions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  token_hash varchar(64) [unique, not null]
+  refresh_token_hash varchar(64) [unique, not null]
+  user_agent varchar(255)
+  expires_at timestamptz [not null]
+  refresh_expires_at timestamptz [not null]
+  created_at timestamptz [not null, default: `now()`]
+  last_seen_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    user_id
+    expires_at
+    refresh_expires_at
+  }
+}
+
+Table traveler_profiles {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  nationality varchar(2)
+  language varchar(10) [default: 'vi']
+  origin_city varchar(100)
+  budget_min numeric(12,2)
+  budget_max numeric(12,2)
+  currency varchar(3) [default: 'VND']
+  travel_style varchar(50)
+  interests text[] [not null]
+  dislikes text[] [not null]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    user_id
+  }
+}
+
+Table trips {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  profile_id uuid
+  title varchar(150)
+  start_date date [not null]
+  end_date date [not null]
+  adults int [not null, default: 1]
+  children int [not null, default: 0]
+  notes text
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    user_id
+    (start_date, end_date)
+  }
+}
+
+Table trip_companions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  trip_id uuid [not null]
+  name varchar(150)
+  age int
+  gender gender
+  notes text
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    trip_id
+  }
+}
+
+Table places {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name varchar(200) [not null]
+  slug varchar(200) [unique]
+  category varchar(50) [not null]
+  description text
+  address varchar(255)
+  district varchar(100)
+  latitude numeric(10,7)
+  longitude numeric(10,7)
+  price_level smallint
+  avg_rating numeric(2,1)
+  opening_hours jsonb
+  tags text[] [not null]
+  is_active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    category
+    district
+    (latitude, longitude)
+    tags
+  }
+}
+
+Table data_sources {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name varchar(150) [not null]
+  url text [not null]
+  source_type varchar(30) [default: 'api']
+  cron_expression varchar(50) [not null, default: '0 */6 * * *']
+  is_active boolean [not null, default: true]
+  last_synced_at timestamptz
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    url [unique]
+  }
+}
+
+Table events {
+  id uuid [pk, default: `gen_random_uuid()`]
+  source_id uuid
+  external_id varchar(255)
+  title varchar(255) [not null]
+  description text
+  venue varchar(255)
+  address varchar(255)
+  latitude numeric(10,7)
+  longitude numeric(10,7)
+  start_at timestamptz [not null]
+  end_at timestamptz
+  is_free boolean
+  price_min numeric(12,2)
+  price_max numeric(12,2)
+  ticket_url text
+  tags text[] [not null]
+  current_version int [not null, default: 1]
+  is_active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (source_id, external_id) [unique]
+    start_at
+    (latitude, longitude)
+    tags
+  }
+}
+
+Table event_versions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  event_id uuid [not null]
+  version_number int [not null]
+  change_type change_type [not null]
+  snapshot jsonb [not null]
+  changed_fields text[] [not null]
+  detected_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (event_id, version_number) [unique]
+    detected_at
+  }
+}
+
+Table sync_runs {
+  id uuid [pk, default: `gen_random_uuid()`]
+  source_id uuid [not null]
+  status sync_status [not null, default: 'running']
+  items_fetched int [not null, default: 0]
+  items_created int [not null, default: 0]
+  items_updated int [not null, default: 0]
+  items_deleted int [not null, default: 0]
+  error_message text
+  started_at timestamptz [not null, default: `now()`]
+  finished_at timestamptz
+
+  indexes {
+    source_id
+    (source_id, started_at)
+  }
+}
+
+Table itineraries {
+  id uuid [pk, default: `gen_random_uuid()`]
+  trip_id uuid [not null]
+  parent_itinerary_id uuid
+  chat_session_id uuid
+  title varchar(200)
+  status itinerary_status [not null, default: 'draft']
+  version int [not null, default: 1]
+  reason text
+  generated_by varchar(30) [default: 'ai']
+  total_estimated_cost numeric(12,2)
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    trip_id
+    (trip_id, version) [unique]
+    parent_itinerary_id
+    chat_session_id
+  }
+}
+
+Table itinerary_items {
+  id uuid [pk, default: `gen_random_uuid()`]
+  itinerary_id uuid [not null]
+  day_number int [not null]
+  order_index int [not null]
+  item_type item_type [not null]
+  place_id uuid
+  event_id uuid
+  title varchar(255) [not null]
+  start_time timestamptz
+  end_time timestamptz
+  estimated_cost numeric(12,2)
+  notes text
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    itinerary_id
+    (itinerary_id, day_number, order_index) [unique]
+    place_id
+    event_id
+  }
+}
+
+Table impact_detections {
+  id uuid [pk, default: `gen_random_uuid()`]
+  event_version_id uuid [not null]
+  itinerary_id uuid [not null]
+  itinerary_item_id uuid
+  severity smallint [not null, default: 1]
+  description text
+  is_resolved boolean [not null, default: false]
+  detected_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    itinerary_id
+    event_version_id
+  }
+}
+
+Table notifications {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  trip_id uuid
+  impact_id uuid
+  type notification_type [not null]
+  title varchar(200) [not null]
+  body text
+  is_read boolean [not null, default: false]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id, is_read)
+    created_at
+  }
+}
+
+Table knowledge_chunks {
+  id uuid [pk, default: `gen_random_uuid()`]
+  source_type chunk_source [not null]
+  place_id uuid
+  event_id uuid
+  title varchar(255)
+  content text [not null]
+  embedding vector(1536)
+  metadata jsonb
+  is_active boolean [not null, default: true]
+  created_at timestamptz [not null, default: `now()`]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    source_type
+    place_id
+    event_id
+  }
+}
+
+Table chat_sessions {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  trip_id uuid
+  title varchar(150)
+  last_message_at timestamptz [not null, default: `now()`]
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id, last_message_at)
+    trip_id
+  }
+}
+
+Table chat_messages {
+  id uuid [pk, default: `gen_random_uuid()`]
+  user_id uuid [not null]
+  session_id uuid [not null]
+  role varchar(20) [not null]
+  content text [not null]
+  tool_calls jsonb
+  created_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    (session_id, created_at)
+  }
+}
+
+Ref: sessions.user_id > users.id [delete: cascade, update: cascade]
+Ref: traveler_profiles.user_id > users.id [delete: cascade, update: cascade]
+Ref: trips.user_id > users.id [delete: cascade, update: cascade]
+Ref: trips.profile_id >? traveler_profiles.id [delete: set null, update: cascade]
+Ref: trip_companions.trip_id > trips.id [delete: cascade, update: cascade]
+Ref: events.source_id >? data_sources.id [delete: set null, update: cascade]
+Ref: event_versions.event_id > events.id [delete: no action, update: cascade]
+Ref: sync_runs.source_id > data_sources.id [delete: cascade, update: cascade]
+Ref: itineraries.trip_id > trips.id [delete: cascade, update: cascade]
+Ref: itineraries.parent_itinerary_id >? itineraries.id [delete: set null, update: cascade]
+Ref: itineraries.chat_session_id >? chat_sessions.id [delete: set null, update: cascade]
+Ref: itinerary_items.itinerary_id > itineraries.id [delete: cascade, update: cascade]
+Ref: itinerary_items.place_id >? places.id [delete: set null, update: cascade]
+Ref: itinerary_items.event_id >? events.id [delete: set null, update: cascade]
+Ref: impact_detections.event_version_id > event_versions.id [delete: no action, update: cascade]
+Ref: impact_detections.itinerary_id > itineraries.id [delete: cascade, update: cascade]
+Ref: impact_detections.itinerary_item_id >? itinerary_items.id [delete: cascade, update: cascade]
+Ref: notifications.user_id > users.id [delete: cascade, update: cascade]
+Ref: notifications.trip_id >? trips.id [delete: cascade, update: cascade]
+Ref: notifications.impact_id >? impact_detections.id [delete: set null, update: cascade]
+Ref: knowledge_chunks.place_id >? places.id [delete: cascade, update: cascade]
+Ref: knowledge_chunks.event_id >? events.id [delete: cascade, update: cascade]
+Ref: chat_messages.user_id > users.id [delete: cascade, update: cascade]
+Ref: chat_sessions.user_id > users.id [delete: cascade, update: cascade]
+Ref: chat_sessions.trip_id >? trips.id [delete: set null, update: cascade]
+Ref: chat_messages.session_id > chat_sessions.id [delete: cascade, update: cascade]

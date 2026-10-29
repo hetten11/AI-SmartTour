@@ -1,0 +1,6 @@
+FROM node:24-alpine
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml prisma7.config.ts ./
+RUN npm install -g pnpm && pn install

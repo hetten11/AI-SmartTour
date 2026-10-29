@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.DS_Store
+.output
+.tanstack
+.nitro
+.env
+.vscode
+/api/src/generated/prisma
