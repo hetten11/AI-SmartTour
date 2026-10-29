@@ -1,0 +1,77 @@
+name: ai-travel-assistant-danang
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_travel_assistant_danang}
+    volumes:
+      - db-prod-data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_travel_assistant_danang}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend
+
+  migrate:
+    build:
+      context: ../api
+      dockerfile: dockerfile.prod
+      target: migrate
+    env_file:
+      - ../api/.env
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+    restart: "no"
+
+  api:
+    build:
+      context: ../api
+      dockerfile: dockerfile.prod
+      target: runtime
+    restart: unless-stopped
+    env_file:
+      - ../api/.env
+    environment:
+      NODE_ENV: production
+      PORT: 8000
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - api-prod-uploads:/app/prisma/data/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - backend
+
+  web:
+    build:
+      context: ../web
+      dockerfile: dockerfile.prod
+      args:
+        VITE_API_URL: ${VITE_API_URL:?Set VITE_API_URL in the root .env file}
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  api-prod-uploads:
+  db-prod-data:

@@ -1,0 +1,6 @@
+FROM node:24-alpine
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml* vite.config.ts tsconfig.json ./
+RUN npm install -g pnpm && pn install

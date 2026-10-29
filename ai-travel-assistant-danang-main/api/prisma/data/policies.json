@@ -1,0 +1,38 @@
+[
+  {
+    "id": "lost-passport",
+    "title": "Mất hộ chiếu tại Đà Nẵng",
+    "tags": ["khẩn cấp", "hộ chiếu", "lãnh sự"],
+    "content": "Khi mất hộ chiếu: 1) Trình báo mất tại công an phường hoặc công an quận nơi mất để lấy giấy xác nhận. 2) Liên hệ đại sứ quán hoặc lãnh sự quán nước mình tại Việt Nam để xin giấy thông hành hoặc hộ chiếu mới; nhiều nước có lãnh sự quán tại Hà Nội hoặc Thành phố Hồ Chí Minh, một số nước có văn phòng lãnh sự tại Đà Nẵng. 3) Giữ bản photo hộ chiếu, ảnh thẻ và vé máy bay để chứng minh nhân thân. 4) Nếu đã mua bảo hiểm du lịch, gọi tổng đài bảo hiểm để được hỗ trợ chi phí và thủ tục."
+  },
+  {
+    "id": "emergency-numbers",
+    "title": "Số điện thoại khẩn cấp tại Đà Nẵng",
+    "tags": ["khẩn cấp", "công an", "cấp cứu", "cứu hoả"],
+    "content": "Cảnh sát 113, Cứu hoả 114, Cấp cứu 115. Công an thành phố Đà Nẵng: 0236 3822 555. Trung tâm cấp cứu 115 Đà Nẵng: 0236 3823 115. Cứu hộ cứu nạn trên biển: 0236 3834 434. Đường dây nóng hỗ trợ du khách Đà Nẵng: 0236 1022. Tổng đài du lịch quốc gia: 1039."
+  },
+  {
+    "id": "visa-and-stay",
+    "title": "Visa và khai báo tạm trú",
+    "tags": ["visa", "tạm trú", "thủ tục", "lưu trú"],
+    "content": "Khách quốc tế cần visa hoặc miễn thị thực theo thoả thuận song phương; kiểm tra thời hạn miễn thị thực trước khi nhập cảnh. Từ 15/8/2023 công dân một số nước được miễn thị thực 45 ngày. Khách lưu trú tại khách sạn được cơ sở lưu trú khai báo tạm trú qua hệ thống của cơ quan xuất nhập cảnh. Khách ở homestay hoặc nhà riêng phải tự khai báo tạm trú với công an phường trong 12 giờ đầu. Gia hạn visa nộp tại Phòng Quản lý xuất nhập cảnh Công an Đà Nẵng, xử lý thường 5 đến 7 ngày làm việc."
+  },
+  {
+    "id": "lost-luggage",
+    "title": "Thất lạc hành lý",
+    "tags": ["khẩn cấp", "hành lý", "sân bay", "bảo hiểm"],
+    "content": "Khi hành lý thất lạc tại sân bay Đà Nẵng: làm tờ khai thất lạc tại quầy Lost and Found của hãng bay ngay trong sân bay, giữ số hồ sơ PIR. Hãng bay có trách nhiệm truy tìm trong 21 ngày theo Công ước Montreal, hoàn trả chi phí thiết yếu theo mức quy định. Nếu hành lý bị mất trên xe taxi hoặc xe công nghệ, gọi tổng đài hãng xe và trình báo công an nếu có tài sản giá trị. Lưu hoá đơn mua đồ thay thế để yêu cầu bảo hiểm hoàn tiền."
+  },
+  {
+    "id": "health-and-hospital",
+    "title": "Y tế và bệnh viện",
+    "tags": ["y tế", "bệnh viện", "bảo hiểm"],
+    "content": "Bệnh viện Đà Nẵng: 124 Hải Phòng, Hải Châu, điện thoại 0236 3821 480. Bệnh viện C Đà Nẵng: 122 Hải Phòng. Bệnh viện Hoàn Mỹ Đà Nẵng: 291 Nguyễn Văn Linh, có khoa quốc tế và hỗ trợ tiếng Anh. Bệnh viện Vinmec Đà Nẵng: 50 Nguyễn Hữu Thọ. Nhà thuốc lớn mở đến 22 giờ quanh khu Hải Châu và Ngũ Hành Sơn. Nên mua bảo hiểm du lịch có chi trả y tế vì viện phí quốc tế cao."
+  },
+  {
+    "id": "transport-and-safety",
+    "title": "Di chuyển và an toàn",
+    "tags": ["di chuyển", "an toàn", "taxi", "grab"],
+    "content": "Sân bay Đà Nẵng cách trung tâm khoảng 3km, taxi hoặc xe công nghệ mất 10 đến 15 phút. Dùng xe công nghệ hoặc taxi có đồng hồ của các hãng lớn, tránh xe dù ở cổng sân bay. Thuê xe máy cần bằng lái hợp lệ và đội mũ bảo hiểm; không uống rượu bia khi lái xe vì mức phạt rất cao. Giữ túi xách trước người khi đi bộ ở khu đông, đặc biệt tối cuối tuần ở phố đi bộ Bạch Đằng. Số taxi Mai Linh Đà Nẵng: 0236 3525 252."
+  }
+]

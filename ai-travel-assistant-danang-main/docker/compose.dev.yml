@@ -1,0 +1,91 @@
+name: ai-travel-assistant-danang
+
+services:
+  api-dev:
+    build:
+      context: ../api
+      dockerfile: dockerfile.dev
+    container_name: ai-travel-assistant-danang-api-dev
+    env_file:
+      - ../api/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../api:/app
+      - api-dev-node-modules:/app/node_modules
+    develop:
+      watch:
+        - action: restart
+          path: ../api/src
+    networks:
+      - db-dev-network
+      - api-dev-network
+    command: ["pn", "dev"]
+
+  web-dev:
+    build:
+      context: ../web
+      dockerfile: dockerfile.dev
+    container_name: ai-travel-assistant-danang-web-dev
+    env_file:
+      - ../web/.env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../web:/app
+      - web-dev-node-modules:/app/node_modules
+    develop:
+      watch:
+        - action: restart
+          path: ../web/src
+    networks:
+      - api-dev-network
+    command: ["pn", "dev", "--host", "0.0.0.0"]
+
+  db-dev:
+    image: pgvector/pgvector:pg18
+    container_name: ai-travel-assistant-danang-db-dev
+    restart: always
+    environment:
+      POSTGRES_USER: ${DATABASE_USER:-postgres}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-thisisapassword}
+      POSTGRES_DB: ${DATABASE_DB:-ai_travel_assistant_danang_dev}
+    volumes:
+      - db-dev-data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${DATABASE_USER:-postgres} -d ${DATABASE_DB:-ai_travel_assistant_danang_dev}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - db-dev-network
+
+  db-client-dev:
+    image: t8y2/dbx:latest
+    container_name: ai-travel-assistant-danang-db-client-dev
+    pull_policy: always
+    ports:
+      - "4224:4224"
+    volumes:
+      - db-client-dev-data:/app/data
+    depends_on:
+      db-dev:
+        condition: service_healthy
+    networks:
+      - db-dev-network
+
+networks:
+  db-dev-network:
+    driver: bridge
+  api-dev-network:
+    driver: bridge
+volumes:
+  api-dev-node-modules:
+  web-dev-node-modules:
+  db-dev-data:
+  db-client-dev-data:
