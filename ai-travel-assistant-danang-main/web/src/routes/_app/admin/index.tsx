@@ -60,9 +60,9 @@ function AdminOverviewPage() {
         {[
           { label: "Người dùng", value: stats.data?.users },
           { label: "Địa điểm", value: stats.data?.places },
+          { label: "⭐ Đối tác F&B", value: stats.data?.sponsoredPlaces },
           { label: "Sự kiện", value: stats.data?.events },
           { label: "Chunk RAG", value: stats.data?.knowledgeChunks },
-          { label: "Đang đồng bộ", value: stats.data?.runningRuns },
           { label: "Thông báo chưa đọc", value: stats.data?.unreadNotifications },
         ].map((item) => (
           <Card key={item.label}>

@@ -5,6 +5,7 @@ import type {
   AppNotification,
   ChatMessage,
   ChatSession,
+  CrawlPlacesResult,
   DataSource,
   DataSourceInput,
   Event,
@@ -221,7 +222,14 @@ export const tripQueryOptions = (id: string) =>
 
 // ----------------------------------------------------------------- địa điểm
 
-export type PlaceFilters = { q?: string; district?: string; category?: string; page?: number };
+export type PlaceFilters = {
+  q?: string;
+  district?: string;
+  category?: string;
+  sponsored?: boolean;
+  take?: number;
+  page?: number;
+};
 
 export const listPlaces = (filters: PlaceFilters = {}): Promise<PlacePage> =>
   request<PlacePage>(`/api/places${queryString(filters)}`, "GET");
@@ -247,6 +255,11 @@ export const districtsQueryOptions = queryOptions({
 export const createPlace = async (input: PlaceInput): Promise<Place> =>
   (await post<{ place: Place }>("/api/admin/places", input)).place;
 
+export const crawlPlaces = async (
+  input: { category?: string; limit?: number; includeOsm?: boolean } = {},
+): Promise<CrawlPlacesResult> =>
+  (await post<{ result: CrawlPlacesResult }>("/api/admin/places/crawl", input)).result;
+
 export const updatePlace = async (id: string, input: Partial<PlaceInput>): Promise<Place> =>
   (await patch<{ place: Place }>(`/api/admin/places/${id}`, input)).place;
 
@@ -254,7 +267,13 @@ export const deletePlace = (id: string) => remove<void>(`/api/admin/places/${id}
 
 // ----------------------------------------------------------------- sự kiện
 
-export type EventFilters = { q?: string; from?: string; to?: string; page?: number };
+export type EventFilters = {
+  q?: string;
+  from?: string;
+  to?: string;
+  hideEnded?: boolean;
+  page?: number;
+};
 
 export const listEvents = (filters: EventFilters = {}): Promise<EventPage> =>
   request<EventPage>(`/api/events${queryString(filters)}`, "GET");
@@ -365,20 +384,55 @@ export const listItineraries = async (tripId: string): Promise<Itinerary[]> =>
   (await request<{ itineraries: Itinerary[] }>(`/api/trips/${tripId}/itineraries`, "GET"))
     .itineraries;
 
+export type GenerateItineraryInput = {
+  mode?: "auto" | "checklist";
+  categories?: string[];
+  preferredPlaceIds?: string[];
+  userLatitude?: number | null;
+  userLongitude?: number | null;
+  notes?: string;
+};
+
 export const generateItinerary = async (
   tripId: string,
-  input: { notes?: string } = {},
+  input: GenerateItineraryInput = {},
 ): Promise<Itinerary> =>
   (await post<{ itinerary: Itinerary }>(`/api/trips/${tripId}/itineraries`, input)).itinerary;
 
 export const getItinerary = (id: string) =>
   request<ItineraryDetail>(`/api/itineraries/${id}`, "GET");
 
+export const estimateItineraryCosts = (id: string) =>
+  post<ItineraryDetail>(`/api/itineraries/${id}/estimate-costs`);
+
 export const updateItineraryItem = (
   itineraryId: string,
   itemId: string,
-  data: { dayNumber?: number; orderIndex?: number; title?: string; notes?: string | null },
+  data: {
+    dayNumber?: number;
+    orderIndex?: number;
+    title?: string;
+    itemType?: string;
+    placeId?: string | null;
+    eventId?: string | null;
+    startTime?: string | null;
+    endTime?: string | null;
+    estimatedCost?: number | null;
+    notes?: string | null;
+  },
 ) => patch<{ item: ItineraryItem }>(`/api/itineraries/${itineraryId}/items/${itemId}`, data);
+
+export const deleteItineraryItem = (itineraryId: string, itemId: string) =>
+  remove<void>(`/api/itineraries/${itineraryId}/items/${itemId}`);
+
+export const moveItineraryItem = (
+  itineraryId: string,
+  itemId: string,
+  direction: "up" | "down",
+) =>
+  post<{ itinerary: Itinerary }>(`/api/itineraries/${itineraryId}/items/${itemId}/move`, {
+    direction,
+  });
 
 export const listImpacts = async (tripId: string): Promise<Impact[]> =>
   (await request<{ impacts: Impact[] }>(`/api/trips/${tripId}/impacts`, "GET")).impacts;
@@ -421,7 +475,11 @@ export const addItineraryItem = (
     itemType?: string;
     placeId?: string | null;
     eventId?: string | null;
+    startTime?: string | null;
+    endTime?: string | null;
+    estimatedCost?: number | null;
     notes?: string | null;
+    inPlace?: boolean;
   },
 ) => post<{ itinerary: Itinerary }>(`/api/itineraries/${itineraryId}/items`, data);
 

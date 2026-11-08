@@ -180,27 +180,36 @@ model TripCompanion {
 }
 
 model Place {
-  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name           String           @db.VarChar(200)
-  slug           String?          @unique @db.VarChar(200)
-  category       String           @db.VarChar(50)
-  description    String?          @db.Text
-  address        String?          @db.VarChar(255)
-  district       String?          @db.VarChar(100)
-  latitude       Decimal?         @db.Decimal(10, 7)
-  longitude      Decimal?         @db.Decimal(10, 7)
-  priceLevel     Int?             @map("price_level") @db.SmallInt
-  avgRating      Decimal?         @map("avg_rating") @db.Decimal(2, 1)
-  openingHours   Json?            @map("opening_hours") @db.JsonB
-  tags           String[]         @db.Text
-  isActive       Boolean          @default(true) @map("is_active")
-  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt      DateTime         @default(now()) @map("updated_at") @db.Timestamptz(6)
-  itineraryItems ItineraryItem[]
-  knowledgeChunks KnowledgeChunk[]
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String           @db.VarChar(200)
+  slug             String?          @unique @db.VarChar(200)
+  category         String           @db.VarChar(50)
+  description      String?          @db.Text
+  address          String?          @db.VarChar(255)
+  district         String?          @db.VarChar(100)
+  latitude         Decimal?         @db.Decimal(10, 7)
+  longitude        Decimal?         @db.Decimal(10, 7)
+  priceLevel       Int?             @map("price_level") @db.SmallInt
+  estimatedCostVnd Int?             @map("estimated_cost_vnd")
+  avgRating        Decimal?         @map("avg_rating") @db.Decimal(2, 1)
+  openingHours     Json?            @map("opening_hours") @db.JsonB
+  tags             String[]         @db.Text
+  isSponsored      Boolean          @default(false) @map("is_sponsored")
+  sponsorTier      String?          @map("sponsor_tier") @db.VarChar(30)
+  sponsorPriority  Int              @default(0) @map("sponsor_priority") @db.SmallInt
+  partnerName      String?          @map("partner_name") @db.VarChar(150)
+  partnerContact   String?          @map("partner_contact") @db.VarChar(150)
+  contractStartAt  DateTime?        @map("contract_start_at") @db.Timestamptz(6)
+  contractEndAt    DateTime?        @map("contract_end_at") @db.Timestamptz(6)
+  isActive         Boolean          @default(true) @map("is_active")
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime         @default(now()) @map("updated_at") @db.Timestamptz(6)
+  itineraryItems   ItineraryItem[]
+  knowledgeChunks  KnowledgeChunk[]
 
   @@index([category])
   @@index([district])
+  @@index([isSponsored, sponsorPriority])
   @@index([latitude, longitude])
   @@index([tags])
   @@map("places")
@@ -211,7 +220,7 @@ model DataSource {
   name           String    @db.VarChar(150)
   url            String    @unique @db.Text
   sourceType     String?   @default("api") @map("source_type") @db.VarChar(30)
-  cronExpression String    @default("0 */6 * * *") @map("cron_expression") @db.VarChar(50)
+  cronExpression String    @default("0 0 * * *") @map("cron_expression") @db.VarChar(50)
   isActive       Boolean   @default(true) @map("is_active")
   lastSyncedAt   DateTime? @map("last_synced_at") @db.Timestamptz(6)
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)

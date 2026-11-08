@@ -2,6 +2,8 @@ import { Router } from "express";
 import { requireRole } from "../../common/authz.ts";
 import { requireAuth } from "../auth/auth.middleware.ts";
 import { reindexAll } from "../knowledge/knowledge.service.ts";
+import { crawlDaNangPlaces } from "../sync/crawler.service.ts";
+import { startSyncCron } from "../sync/sync.cron.ts";
 import { runSource } from "../sync/sync.service.ts";
 import * as admin from "./admin.service.ts";
 
@@ -23,6 +25,16 @@ adminRouter.patch("/users/:id", async (req, res) => {
 
 adminRouter.post("/places", async (req, res) => {
   res.status(201).json({ place: await admin.createPlace(req.body) });
+});
+
+adminRouter.post("/places/crawl", async (req, res) => {
+  const body = (req.body ?? {}) as { category?: string; limit?: number; includeOsm?: boolean };
+  const result = await crawlDaNangPlaces({
+    category: typeof body.category === "string" ? body.category : undefined,
+    limit: typeof body.limit === "number" ? body.limit : 60,
+    includeOsm: body.includeOsm !== false,
+  });
+  res.json({ result });
 });
 
 adminRouter.patch("/places/:id", async (req, res) => {
@@ -52,15 +64,20 @@ adminRouter.get("/sources", async (_req, res) => {
 });
 
 adminRouter.post("/sources", async (req, res) => {
-  res.status(201).json({ source: await admin.createSource(req.body) });
+  const source = await admin.createSource(req.body);
+  void startSyncCron();
+  res.status(201).json({ source });
 });
 
 adminRouter.patch("/sources/:id", async (req, res) => {
-  res.json({ source: await admin.updateSource(req.params.id, req.body) });
+  const source = await admin.updateSource(req.params.id, req.body);
+  void startSyncCron();
+  res.json({ source });
 });
 
 adminRouter.delete("/sources/:id", async (req, res) => {
   await admin.deleteSource(req.params.id);
+  void startSyncCron();
   res.status(204).end();
 });
 

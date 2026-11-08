@@ -4,9 +4,12 @@ import { useState } from "react";
 import {
   activateItinerary,
   addItineraryItem,
+  deleteItineraryItem,
+  estimateItineraryCosts,
   eventsQueryOptions,
   getItineraryDiff,
   itineraryQueryOptions,
+  moveItineraryItem,
   placesQueryOptions,
   runWhatIf,
   tripQueryOptions,
@@ -41,6 +44,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/components/ui/toast";
 import {
   Table,
   TableBody,
@@ -73,13 +77,29 @@ const dateOfDay = (startDate: string, dayNumber: number) =>
     .toISOString()
     .slice(0, 10);
 
+const formatTimeSlot = (iso: string | null) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+};
+
 function ItineraryPage() {
   const { itineraryId } = Route.useParams();
   const navigate = Route.useNavigate();
   const queryClient = useQueryClient();
   const query = useQuery(itineraryQueryOptions(itineraryId));
+
   const [editing, setEditing] = useState<ItineraryItem | null>(null);
-  const [draft, setDraft] = useState({ title: "", notes: "", dayNumber: "1", orderIndex: "0" });
+  const [selectedMapDay, setSelectedMapDay] = useState<number | null>(null);
+  const [draft, setDraft] = useState({
+    title: "",
+    notes: "",
+    dayNumber: "1",
+    orderIndex: "0",
+    estimatedCost: "0",
+    itemType: "place",
+  });
   const [scenario, setScenario] = useState("");
   const [whatIfOpen, setWhatIfOpen] = useState(false);
   const [whatIfResult, setWhatIfResult] = useState<{
@@ -87,15 +107,20 @@ function ItineraryPage() {
     diff: ItineraryDiff;
   } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [addForm, setAddForm] = useState({ dayNumber: "1", title: "", eventId: "", placeId: "" });
+  const [addForm, setAddForm] = useState({
+    dayNumber: "1",
+    title: "",
+    eventId: "",
+    placeId: "",
+    estimatedCost: "",
+    notes: "",
+    inPlace: true,
+  });
 
   const tripId = query.data?.itinerary.tripId ?? "";
   const trip = useQuery({ ...tripQueryOptions(tripId), enabled: tripId !== "" });
   const weather = useQuery(weatherQueryOptions);
-  // ponytail: select lấy 20 địa điểm active (/api/places) và 20 sự kiện sớm nhất
-  // (/api/events), không lọc theo ngày chuyến đi và không phân trang. Thêm ô tìm
-  // hoặc trang khi dữ liệu vượt 20.
-  const placeOptions = useQuery(placesQueryOptions());
+  const placeOptions = useQuery(placesQueryOptions({ take: 60 }));
   const startDate = trip.data?.startDate.slice(0, 10) ?? "";
   const events = useQuery(eventsQueryOptions());
 
@@ -111,38 +136,90 @@ function ItineraryPage() {
         notes: draft.notes === "" ? null : draft.notes,
         dayNumber: Number(draft.dayNumber),
         orderIndex: Number(draft.orderIndex),
+        itemType: draft.itemType,
+        estimatedCost: draft.estimatedCost === "" ? 0 : Number(draft.estimatedCost),
       }),
     onSuccess: async () => {
       setEditing(null);
       await refresh();
+      toast.add({ type: "success", title: "Đã cập nhật hoạt động & chi phí" });
+    },
+  });
+
+  const removeItem = useMutation({
+    mutationFn: (itemId: string) => deleteItineraryItem(itineraryId, itemId),
+    onSuccess: async () => {
+      await refresh();
+      toast.add({ type: "success", title: "Đã xoá địa điểm khỏi lịch trình" });
+    },
+    onError: (err) =>
+      toast.add({
+        type: "error",
+        title: "Không xoá được hoạt động",
+        description: errorMessage(err),
+      }),
+  });
+
+  const moveItem = useMutation({
+    mutationFn: ({ itemId, direction }: { itemId: string; direction: "up" | "down" }) =>
+      moveItineraryItem(itineraryId, itemId, direction),
+    onSuccess: refresh,
+  });
+
+  const recalculateCosts = useMutation({
+    mutationFn: () => estimateItineraryCosts(itineraryId),
+    onSuccess: async () => {
+      await refresh();
+      toast.add({
+        type: "success",
+        title: "AI đã tự động tính toán chi phí cho từng địa điểm và từng ngày!",
+      });
     },
   });
 
   const addItem = useMutation({
     mutationFn: () => {
       const knownPlaces = placeOptions.data?.places ?? [];
+      const pickedPlace = knownPlaces.find((place) => place.id === addForm.placeId);
+      const pickedEvent = events.data?.events.find((event) => event.id === addForm.eventId);
       const fallbackTitle =
-        events.data?.events.find((event) => event.id === addForm.eventId)?.title ??
-        knownPlaces.find((place) => place.id === addForm.placeId)?.name ??
-        "Hoạt động mới";
+        pickedEvent?.title ?? pickedPlace?.name ?? "Hoạt động mới";
 
       return addItineraryItem(itineraryId, {
         dayNumber: Number(addForm.dayNumber),
-        title: addForm.title !== "" ? addForm.title : fallbackTitle,
-        itemType: addForm.eventId !== "" ? "event" : "place",
+        title: addForm.title.trim() !== "" ? addForm.title.trim() : fallbackTitle,
+        itemType:
+          addForm.eventId !== ""
+            ? "event"
+            : pickedPlace?.category === "restaurant" || pickedPlace?.category === "cafe"
+              ? "restaurant"
+              : "place",
         eventId: addForm.eventId === "" ? null : addForm.eventId,
         placeId: addForm.placeId === "" ? null : addForm.placeId,
+        estimatedCost: addForm.estimatedCost.trim() === "" ? null : Number(addForm.estimatedCost),
+        notes: addForm.notes.trim() || null,
+        inPlace: addForm.inPlace,
       });
     },
     onSuccess: async (result) => {
       setAddOpen(false);
-      setAddForm({ dayNumber: "1", title: "", eventId: "", placeId: "" });
-      await refresh();
-      // Mỗi lần đổi là một phiên bản mới, mở luôn bản vừa tạo.
-      await navigate({
-        to: "/itineraries/$itineraryId",
-        params: { itineraryId: result.itinerary.id },
+      setAddForm({
+        dayNumber: "1",
+        title: "",
+        eventId: "",
+        placeId: "",
+        estimatedCost: "",
+        notes: "",
+        inPlace: true,
       });
+      await refresh();
+      toast.add({ type: "success", title: "Đã thêm địa điểm vào lịch trình" });
+      if (result.itinerary.id !== itineraryId) {
+        await navigate({
+          to: "/itineraries/$itineraryId",
+          params: { itineraryId: result.itinerary.id },
+        });
+      }
     },
   });
 
@@ -166,7 +243,6 @@ function ItineraryPage() {
       return getItineraryDiff(previous, itineraryId);
     },
     onSuccess: (diff) => {
-      // Kết quả diff hiện trong dialog what-if, phải mở dialog thì mới thấy.
       setScenario("");
       setWhatIfResult({ itineraryId, diff });
       setWhatIfOpen(true);
@@ -182,16 +258,22 @@ function ItineraryPage() {
   const placeNames = new Map(places.map((place) => [place.id, place.name]));
   const placeById = new Map(places.map((place) => [place.id, place]));
   const eventNames = new Map((query.data.events ?? []).map((event) => [event.id, event.title]));
+  const eventById = new Map((query.data.events ?? []).map((event) => [event.id, event]));
   const days = [...new Set(itinerary.items.map((item) => item.dayNumber))].sort((a, b) => a - b);
   const weatherByDate = new Map((weather.data?.days ?? []).map((day) => [day.date, day]));
 
   const coordinatesOf = (item: ItineraryItem) => {
-    const place = item.placeId ? placeById.get(item.placeId) : undefined;
-    return place ? toCoordinates(place.latitude, place.longitude) : null;
+    if (item.placeId) {
+      const place = placeById.get(item.placeId);
+      if (place) return toCoordinates(place.latitude, place.longitude);
+    }
+    if (item.eventId) {
+      const ev = eventById.get(item.eventId);
+      if (ev) return toCoordinates(ev.latitude ?? null, ev.longitude ?? null);
+    }
+    return null;
   };
 
-  // Khoảng cách chim bay giữa các hoạt động liên tiếp trong ngày, chỉ tính khi
-  // hoạt động có gắn địa điểm có toạ độ.
   const dayDistance = (day: number) => {
     const points = itinerary.items
       .filter((item) => item.dayNumber === day)
@@ -199,17 +281,36 @@ function ItineraryPage() {
       .filter((value): value is Coordinates => value !== null);
     let total = 0;
     for (let index = 1; index < points.length; index += 1) {
-      total += distanceKm(points[index - 1], points[index]);
+      total += distanceKm(points[index - 1]!, points[index]!);
     }
     return total;
   };
 
-  const mapPoints = itinerary.items.flatMap((item) => {
-    const coordinates = coordinatesOf(item);
-    return coordinates
-      ? [{ id: item.id, name: item.title, ...coordinates, note: `Ngày ${item.dayNumber}` }]
-      : [];
-  });
+  // Tổng chi phí dự kiến cho từng ngày
+  const dayTotalCost = (day: number) =>
+    itinerary.items
+      .filter((item) => item.dayNumber === day)
+      .reduce((sum, item) => sum + Number(item.estimatedCost ?? 0), 0);
+
+  const mapPoints = itinerary.items
+    .filter((item) => (selectedMapDay === null ? true : item.dayNumber === selectedMapDay))
+    .flatMap((item, idx) => {
+      const coordinates = coordinatesOf(item);
+      const linkedPlace = item.placeId ? placeById.get(item.placeId) : undefined;
+      return coordinates
+        ? [
+            {
+              id: item.id,
+              name: item.title,
+              ...coordinates,
+              orderNumber: idx + 1,
+              dayNumber: item.dayNumber,
+              isSponsored: linkedPlace?.isSponsored,
+              note: `Ngày ${item.dayNumber} · ${formatMoney(item.estimatedCost)}`,
+            },
+          ]
+        : [];
+    });
 
   const eventItems = [
     { value: "", label: "Không chọn" },
@@ -221,7 +322,10 @@ function ItineraryPage() {
 
   const placeItems = [
     { value: "", label: "Không chọn" },
-    ...(placeOptions.data?.places ?? []).map((place) => ({ value: place.id, label: place.name })),
+    ...(placeOptions.data?.places ?? []).map((place) => ({
+      value: place.id,
+      label: `${place.isSponsored ? "⭐ " : ""}${place.name}${place.estimatedCostVnd ? ` (${formatMoney(place.estimatedCostVnd)})` : ""}`,
+    })),
   ];
 
   return (
@@ -243,17 +347,22 @@ function ItineraryPage() {
           >
             Về chuyến đi
           </Button>
+          <Button
+            variant="outline"
+            disabled={recalculateCosts.isPending}
+            onClick={() => recalculateCosts.mutate()}
+          >
+            {recalculateCosts.isPending ? "Đang tính..." : "💰 AI Tính toán chi phí"}
+          </Button>
+          <Button variant="outline" onClick={() => setWhatIfOpen(true)}>
+            Tình huống (What-If)
+          </Button>
+          <Button onClick={() => setAddOpen(true)}>+ Thêm địa điểm</Button>
           {itinerary.status === "active" ? null : (
             <Button disabled={activate.isPending} onClick={() => activate.mutate(itineraryId)}>
               Đặt làm bản chính
             </Button>
           )}
-          <Button variant="outline" onClick={() => setWhatIfOpen(true)}>
-            Tình huống
-          </Button>
-          <Button variant="outline" onClick={() => setAddOpen(true)}>
-            Thêm hoạt động
-          </Button>
         </div>
       </div>
 
@@ -264,63 +373,141 @@ function ItineraryPage() {
         <p className="text-destructive text-sm">{errorMessage(compare.error)}</p>
       ) : null}
 
-      {mapPoints.length > 0 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Bản đồ lịch trình</CardTitle>
-            <CardDescription>
-              Bấm vào ghim để xem hoạt động. Khoảng cách là đường chim bay.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <MapView points={mapPoints} height={340} />
-          </CardContent>
-        </Card>
-      ) : null}
+      {/* Tổng quan ngân sách theo từng ngày */}
+      <Card className="border-emerald-500/30 bg-emerald-500/5">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
+          <div>
+            <div className="text-xs font-medium uppercase text-emerald-700 dark:text-emerald-300">
+              Dự toán tổng chi phí toàn chuyến đi ({days.length} ngày · {itinerary.items.length} điểm)
+            </div>
+            <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400">
+              {formatMoney(itinerary.totalEstimatedCost)}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {days.map((d) => (
+              <Badge key={d} variant="secondary" className="px-2.5 py-1 text-xs">
+                Ngày {d}: {formatMoney(dayTotalCost(d))}
+              </Badge>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle>Bản đồ Lộ trình Đường bộ & Định vị Thời gian thực</CardTitle>
+              <CardDescription>
+                Nối các điểm theo tuyến đường giao thông thực tế (OSRM) thay vì đường chim bay. Bấm chọn từng ngày để xem lộ trình di chuyển chi tiết của ngày đó.
+              </CardDescription>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <Button
+                type="button"
+                size="sm"
+                variant={selectedMapDay === null ? "default" : "outline"}
+                onClick={() => setSelectedMapDay(null)}
+              >
+                Tất cả ({days.length} ngày)
+              </Button>
+              {days.map((d) => (
+                <Button
+                  key={d}
+                  type="button"
+                  size="sm"
+                  variant={selectedMapDay === d ? "default" : "outline"}
+                  onClick={() => setSelectedMapDay(d)}
+                >
+                  Ngày {d}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <MapView points={mapPoints} showRoute={true} numbered={true} height={360} />
+        </CardContent>
+      </Card>
 
       {days.map((day) => {
         const forecast = startDate === "" ? undefined : weatherByDate.get(dateOfDay(startDate, day));
+        const dayItems = itinerary.items.filter((item) => item.dayNumber === day);
+        const dayCost = dayTotalCost(day);
+
         return (
           <Card key={day}>
             <CardHeader>
-              <CardTitle className="flex flex-wrap items-center gap-2">
-                Ngày {day}
-                {startDate ? (
-                  <span className="text-muted-foreground text-sm font-normal">
-                    {formatDate(`${dateOfDay(startDate, day)}T00:00:00.000Z`)}
-                  </span>
-                ) : null}
-                {forecast ? (
-                  <Badge variant={forecast.isRainy ? "destructive" : "secondary"}>
-                    {forecast.description} · {forecast.minTemp}-{forecast.maxTemp}°C
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <CardTitle className="flex flex-wrap items-center gap-2">
+                  <span>Ngày {day}</span>
+                  {startDate ? (
+                    <span className="text-muted-foreground text-sm font-normal">
+                      ({formatDate(`${dateOfDay(startDate, day)}T00:00:00.000Z`)})
+                    </span>
+                  ) : null}
+                  {forecast ? (
+                    <Badge variant={forecast.isRainy ? "destructive" : "secondary"}>
+                      {forecast.description} · {forecast.minTemp}-{forecast.maxTemp}°C
+                    </Badge>
+                  ) : null}
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
+                    💰 Tổng chi phí Ngày {day}: {formatMoney(dayCost)}
                   </Badge>
-                ) : null}
-              </CardTitle>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setAddForm((prev) => ({ ...prev, dayNumber: String(day) }));
+                      setAddOpen(true);
+                    }}
+                  >
+                    + Thêm vào Ngày {day}
+                  </Button>
+                </div>
+              </div>
               <CardDescription>
-                {itinerary.items.filter((item) => item.dayNumber === day).length} hoạt động
-                {dayDistance(day) > 0 ? ` · di chuyển ≈ ${dayDistance(day).toFixed(1)} km` : ""}
+                {dayItems.length} hoạt động (đảm bảo tối thiểu 3 điểm/ngày)
+                {dayDistance(day) > 0 ? ` · tổng quãng đường di chuyển ≈ ${dayDistance(day).toFixed(1)} km` : ""}
               </CardDescription>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-10">#</TableHead>
-                    <TableHead>Hoạt động</TableHead>
+                    <TableHead className="w-12">Thứ tự</TableHead>
+                    <TableHead>Khung giờ</TableHead>
+                    <TableHead>Địa điểm / Hoạt động</TableHead>
                     <TableHead>Loại</TableHead>
-                    <TableHead>Liên kết</TableHead>
-                    <TableHead>Chi phí</TableHead>
-                    <TableHead />
+                    <TableHead>Liên kết hệ thống</TableHead>
+                    <TableHead>Chi phí dự kiến</TableHead>
+                    <TableHead className="text-right">Tùy chỉnh</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {itinerary.items
-                    .filter((item) => item.dayNumber === day)
-                    .map((item, index) => (
-                      <TableRow key={item.id}>
-                        <TableCell>{index + 1}</TableCell>
+                  {dayItems.map((item, index) => {
+                    const linkedPlace = item.placeId ? placeById.get(item.placeId) : undefined;
+                    const startLabel = formatTimeSlot(item.startTime);
+                    const endLabel = formatTimeSlot(item.endTime);
+                    return (
+                      <TableRow
+                        key={item.id}
+                        className={linkedPlace?.isSponsored ? "bg-amber-500/5" : undefined}
+                      >
+                        <TableCell className="font-medium">#{index + 1}</TableCell>
+                        <TableCell className="text-muted-foreground whitespace-nowrap text-xs">
+                          {startLabel ? `${startLabel}${endLabel ? ` - ${endLabel}` : ""}` : "Linh hoạt"}
+                        </TableCell>
                         <TableCell>
-                          <div>{item.title}</div>
+                          <div className="flex flex-wrap items-center gap-1.5 font-medium">
+                            <span>{item.title}</span>
+                            {linkedPlace?.isSponsored ? (
+                              <Badge className="bg-amber-500 text-white">⭐ Đối tác F&B</Badge>
+                            ) : null}
+                          </div>
                           {item.notes ? (
                             <div className="text-muted-foreground text-xs">{item.notes}</div>
                           ) : null}
@@ -331,28 +518,70 @@ function ItineraryPage() {
                         <TableCell className="text-sm">
                           {item.placeId ? (placeNames.get(item.placeId) ?? "—") : null}
                           {item.eventId ? (eventNames.get(item.eventId) ?? "—") : null}
-                          {!item.placeId && !item.eventId ? "—" : null}
+                          {!item.placeId && !item.eventId ? "Tự nhập" : null}
                         </TableCell>
-                        <TableCell>{formatMoney(item.estimatedCost)}</TableCell>
+                        <TableCell className="font-medium">
+                          {Number(item.estimatedCost ?? 0) === 0 ? (
+                            <Badge variant="secondary">Miễn phí</Badge>
+                          ) : (
+                            formatMoney(item.estimatedCost)
+                          )}
+                        </TableCell>
                         <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setEditing(item);
-                              setDraft({
-                                title: item.title,
-                                notes: item.notes ?? "",
-                                dayNumber: String(item.dayNumber),
-                                orderIndex: String(item.orderIndex),
-                              });
-                            }}
-                          >
-                            Sửa
-                          </Button>
+                          <span className="inline-flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={index === 0 || moveItem.isPending}
+                              title="Đẩy lên trước"
+                              onClick={() =>
+                                moveItem.mutate({ itemId: item.id, direction: "up" })
+                              }
+                            >
+                              ↑
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={index === dayItems.length - 1 || moveItem.isPending}
+                              title="Đẩy xuống sau"
+                              onClick={() =>
+                                moveItem.mutate({ itemId: item.id, direction: "down" })
+                              }
+                            >
+                              ↓
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setEditing(item);
+                                setDraft({
+                                  title: item.title,
+                                  notes: item.notes ?? "",
+                                  dayNumber: String(item.dayNumber),
+                                  orderIndex: String(item.orderIndex),
+                                  estimatedCost: String(Number(item.estimatedCost ?? 0)),
+                                  itemType: item.itemType,
+                                });
+                              }}
+                            >
+                              Sửa
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive"
+                              disabled={removeItem.isPending}
+                              onClick={() => removeItem.mutate(item.id)}
+                            >
+                              Xoá
+                            </Button>
+                          </span>
                         </TableCell>
                       </TableRow>
-                    ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </CardContent>
@@ -361,8 +590,8 @@ function ItineraryPage() {
       })}
 
       <div className="flex flex-wrap items-center gap-3">
-        <p className="text-sm">
-          Tổng chi phí dự kiến: {formatMoney(itinerary.totalEstimatedCost)}
+        <p className="text-sm font-medium">
+          Tổng chi phí dự kiến toàn lịch trình: {formatMoney(itinerary.totalEstimatedCost)}
         </p>
         {itinerary.parentItineraryId ? (
           <Button
@@ -376,21 +605,25 @@ function ItineraryPage() {
         ) : null}
       </div>
 
+      {/* Dialog Sửa hoạt động */}
       <Dialog open={editing !== null} onOpenChange={(open) => (open ? null : setEditing(null))}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Sửa hoạt động</DialogTitle>
+            <DialogTitle>Chỉnh sửa hoạt động & Chi phí</DialogTitle>
+            <DialogDescription>
+              Đổi tên, ngày, thứ tự hoặc điều chỉnh chi phí dự kiến của địa điểm.
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
             <div className="grid gap-1.5">
-              <Label htmlFor="item-title">Tên hoạt động</Label>
+              <Label htmlFor="item-title">Tên hoạt động / Địa điểm</Label>
               <Input
                 id="item-title"
                 value={draft.title}
                 onChange={(event) => setDraft({ ...draft, title: event.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               <div className="grid gap-1.5">
                 <Label htmlFor="item-day">Ngày thứ</Label>
                 <Input
@@ -402,13 +635,24 @@ function ItineraryPage() {
                 />
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="item-order">Thứ tự</Label>
+                <Label htmlFor="item-order">Thứ tự (0, 1, 2...)</Label>
                 <Input
                   id="item-order"
                   type="number"
                   min={0}
                   value={draft.orderIndex}
                   onChange={(event) => setDraft({ ...draft, orderIndex: event.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="item-cost">Chi phí (VNĐ)</Label>
+                <Input
+                  id="item-cost"
+                  type="number"
+                  min={0}
+                  step={10000}
+                  value={draft.estimatedCost}
+                  onChange={(event) => setDraft({ ...draft, estimatedCost: event.target.value })}
                 />
               </div>
             </div>
@@ -433,52 +677,50 @@ function ItineraryPage() {
               disabled={update.isPending || editing === null}
               onClick={() => editing && update.mutate(editing)}
             >
-              {update.isPending ? "Đang lưu..." : "Lưu"}
+              {update.isPending ? "Đang lưu..." : "Lưu thay đổi"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* Dialog Thêm địa điểm / hoạt động */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Thêm hoạt động</DialogTitle>
-            <DialogDescription>Lưu thành phiên bản mới, không sửa bản đang xem.</DialogDescription>
+            <DialogTitle>Thêm địa điểm / hoạt động vào lịch trình</DialogTitle>
+            <DialogDescription>
+              Chọn từ danh sách địa điểm/sự kiện hệ thống hoặc tự nhập tên. Nếu để trống chi phí, AI sẽ tự động ước tính giá tiền phù hợp.
+            </DialogDescription>
           </DialogHeader>
           <div className="grid gap-3">
-            <div className="grid gap-1.5">
-              <Label htmlFor="add-day">Ngày thứ</Label>
-              <Input
-                id="add-day"
-                type="number"
-                min={1}
-                value={addForm.dayNumber}
-                onChange={(event) => setAddForm({ ...addForm, dayNumber: event.target.value })}
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="add-day">Ngày thứ</Label>
+                <Input
+                  id="add-day"
+                  type="number"
+                  min={1}
+                  value={addForm.dayNumber}
+                  onChange={(event) => setAddForm({ ...addForm, dayNumber: event.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="add-cost">Chi phí dự kiến (VNĐ)</Label>
+                <Input
+                  id="add-cost"
+                  type="number"
+                  min={0}
+                  step={10000}
+                  placeholder="Để trống = AI tự tính"
+                  value={addForm.estimatedCost}
+                  onChange={(event) =>
+                    setAddForm({ ...addForm, estimatedCost: event.target.value })
+                  }
+                />
+              </div>
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="add-event">Sự kiện trong chuyến đi</Label>
-              <Select
-                items={eventItems}
-                value={addForm.eventId}
-                onValueChange={(value) =>
-                  setAddForm({ ...addForm, eventId: String(value), placeId: "" })
-                }
-              >
-                <SelectTrigger id="add-event" className="w-full">
-                  <SelectValue placeholder="Không chọn" />
-                </SelectTrigger>
-                <SelectContent>
-                  {eventItems.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="add-place">Hoặc địa điểm</Label>
+              <Label htmlFor="add-place">Chọn địa điểm / Đối tác F&B</Label>
               <Select
                 items={placeItems}
                 value={addForm.placeId}
@@ -499,13 +741,54 @@ function ItineraryPage() {
               </Select>
             </div>
             <div className="grid gap-1.5">
-              <Label htmlFor="add-title">Tên hoạt động (bỏ trống thì lấy tên sự kiện/địa điểm)</Label>
+              <Label htmlFor="add-event">Hoặc chọn sự kiện trong chuyến đi</Label>
+              <Select
+                items={eventItems}
+                value={addForm.eventId}
+                onValueChange={(value) =>
+                  setAddForm({ ...addForm, eventId: String(value), placeId: "" })
+                }
+              >
+                <SelectTrigger id="add-event" className="w-full">
+                  <SelectValue placeholder="Không chọn" />
+                </SelectTrigger>
+                <SelectContent>
+                  {eventItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="add-title">
+                Tên hoạt động (bỏ trống sẽ lấy theo tên địa điểm/sự kiện)
+              </Label>
               <Input
                 id="add-title"
+                placeholder="VD: Thưởng thức hải sản biển Mỹ Khê..."
                 value={addForm.title}
                 onChange={(event) => setAddForm({ ...addForm, title: event.target.value })}
               />
             </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="add-notes">Ghi chú</Label>
+              <Input
+                id="add-notes"
+                placeholder="Ghi chú giờ giấc, món ăn..."
+                value={addForm.notes}
+                onChange={(event) => setAddForm({ ...addForm, notes: event.target.value })}
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                checked={addForm.inPlace}
+                onChange={(e) => setAddForm({ ...addForm, inPlace: e.target.checked })}
+              />
+              <span>Thêm trực tiếp vào phiên bản lịch trình hiện tại (bỏ tích để tạo phiên bản mới)</span>
+            </label>
           </div>
           {addItem.error ? (
             <p className="text-destructive text-sm">{errorMessage(addItem.error)}</p>
@@ -515,12 +798,13 @@ function ItineraryPage() {
               Huỷ
             </Button>
             <Button disabled={addItem.isPending} onClick={() => addItem.mutate()}>
-              {addItem.isPending ? "Đang lưu..." : "Lưu phiên bản mới"}
+              {addItem.isPending ? "Đang thêm..." : "Thêm vào lịch trình"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* Dialog What-if */}
       <Dialog
         open={whatIfOpen}
         onOpenChange={(open) => {
@@ -533,10 +817,9 @@ function ItineraryPage() {
       >
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>So sánh phiên bản lịch trình</DialogTitle>
+            <DialogTitle>Giả lập Tình huống & So sánh Phiên bản</DialogTitle>
             <DialogDescription>
-              Chênh lệch so với bản trước, hoặc để AI sinh một phiên bản mới theo
-              kịch bản. Bản mới chỉ thành bản chính khi bạn bấm Áp dụng.
+              Để AI điều chỉnh lịch trình theo tình huống (vẫn đảm bảo tối thiểu 3-4 điểm/ngày và tính lại chi phí).
             </DialogDescription>
           </DialogHeader>
 
@@ -544,7 +827,7 @@ function ItineraryPage() {
             {whatIfResult ? null : (
               <>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="scenario">Kịch bản</Label>
+                  <Label htmlFor="scenario">Kịch bản thay đổi</Label>
                   <Textarea
                     id="scenario"
                     rows={2}
@@ -580,7 +863,7 @@ function ItineraryPage() {
                 <div className="grid gap-1 text-sm">
                   {whatIfResult.diff.added.map((item) => (
                     <span key={item.id} className="text-emerald-600">
-                      + Ngày {item.dayNumber}: {item.title}
+                      + Ngày {item.dayNumber}: {item.title} ({formatMoney(item.estimatedCost)})
                     </span>
                   ))}
                   {whatIfResult.diff.removed.map((item) => (

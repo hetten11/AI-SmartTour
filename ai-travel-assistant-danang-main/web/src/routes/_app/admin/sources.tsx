@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import {
+  crawlPlaces,
   createSource,
   deleteSource,
   runSource,
@@ -23,6 +24,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/components/ui/toast";
 import {
   Table,
   TableBody,
@@ -40,8 +42,8 @@ export const Route = createFileRoute("/_app/admin/sources")({
 
 const emptySource: DataSourceInput = {
   name: "",
-  sourceType: "file",
-  cronExpression: "0 6 * * *",
+  sourceType: "danang_web",
+  cronExpression: "0 0 * * *",
   isActive: true,
 };
 
@@ -135,27 +137,49 @@ function SourcesPage() {
     onSuccess: refresh,
   });
 
+  const crawlPlacesMutation = useMutation({
+    mutationFn: () => crawlPlaces({ limit: 80, includeOsm: true }),
+    onSuccess: async (res) => {
+      await queryClient.invalidateQueries({ queryKey: ["places"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "stats"] });
+      toast.add({
+        type: "success",
+        title: "Đã cào dữ liệu Địa điểm Đà Nẵng",
+        description: `Tổng xử lý: ${res.totalProcessed} (${res.created} mới, ${res.updated} cập nhật)`,
+      });
+    },
+  });
+
   const set = <K extends keyof DataSourceInput>(field: K, value: DataSourceInput[K]) =>
     setForm((previous) => ({ ...previous, [field]: value }));
 
   return (
     <div className="grid gap-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-muted-foreground text-sm">
-          Tải file JSON sự kiện lên hệ thống, hoặc trỏ tới API bằng URL.
+          Tự động cào dữ liệu sự kiện Web Đà Nẵng lúc 0h00 mỗi ngày (0 0 * * *) và cào dữ liệu địa điểm du lịch, ẩm thực.
         </p>
-        <Button
-          onClick={() => {
-            setEditing(null);
-            setForm(emptySource);
-            setFileLabel("");
-            setFileError("");
-            setAutoName("");
-            setOpen(true);
-          }}
-        >
-          Thêm nguồn
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            disabled={crawlPlacesMutation.isPending}
+            onClick={() => crawlPlacesMutation.mutate()}
+          >
+            {crawlPlacesMutation.isPending ? "Đang cào địa điểm..." : "🕷️ Cào dữ liệu Địa điểm Đà Nẵng"}
+          </Button>
+          <Button
+            onClick={() => {
+              setEditing(null);
+              setForm(emptySource);
+              setFileLabel("");
+              setFileError("");
+              setAutoName("");
+              setOpen(true);
+            }}
+          >
+            + Thêm nguồn sự kiện
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -218,7 +242,12 @@ function SourcesPage() {
                             setEditing(source);
                             setForm({
                               name: source.name,
-                              sourceType: source.sourceType === "file" ? "file" : "api",
+                              sourceType:
+                                source.sourceType === "file"
+                                  ? "file"
+                                  : source.sourceType === "danang_web"
+                                    ? "danang_web"
+                                    : "api",
                               url: source.sourceType === "file" ? undefined : source.url,
                               cronExpression: source.cronExpression,
                               isActive: source.isActive,
@@ -289,17 +318,25 @@ function SourcesPage() {
             </div>
 
             <div className="grid gap-1.5">
-              <Label htmlFor="source-type">Loại</Label>
+              <Label htmlFor="source-type">Loại nguồn dữ liệu</Label>
               <select
                 id="source-type"
                 className="border-input h-8 w-full rounded-lg border bg-transparent px-2 text-sm"
                 value={form.sourceType}
                 onChange={(event) =>
-                  set("sourceType", event.target.value === "file" ? "file" : "api")
+                  set(
+                    "sourceType",
+                    event.target.value === "file"
+                      ? "file"
+                      : event.target.value === "danang_web"
+                        ? "danang_web"
+                        : "api",
+                  )
                 }
               >
-                <option value="file">file (tải lên)</option>
-                <option value="api">api (URL)</option>
+                <option value="danang_web">danang_web (Tự động cào Web Sự kiện Đà Nẵng)</option>
+                <option value="file">file (tải file JSON lên)</option>
+                <option value="api">api (URL JSON)</option>
               </select>
             </div>
 
@@ -332,10 +369,10 @@ function SourcesPage() {
               </div>
             ) : (
               <div className="grid gap-1.5">
-                <Label htmlFor="source-url">URL</Label>
+                <Label htmlFor="source-url">URL (tùy chọn cho danang_web)</Label>
                 <Input
                   id="source-url"
-                  placeholder="https://example.com/events.json"
+                  placeholder="https://danangfantastiCity.com/events"
                   value={form.url ?? ""}
                   onChange={(event) => set("url", event.target.value)}
                 />
@@ -343,7 +380,7 @@ function SourcesPage() {
             )}
 
             <div className="grid gap-1.5">
-              <Label htmlFor="source-cron">Cron</Label>
+              <Label htmlFor="source-cron">Lịch chạy tự động (Cron - mặc định 0 0 * * * = 0h00 mỗi ngày)</Label>
               <Input
                 id="source-cron"
                 value={form.cronExpression}

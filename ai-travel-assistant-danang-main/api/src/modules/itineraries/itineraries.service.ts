@@ -8,6 +8,7 @@ import {
   addItemSchema,
   generateSchema,
   itemSchema,
+  moveItemSchema,
   planSchema,
   updateItemSchema,
   whatIfSchema,
@@ -15,7 +16,7 @@ import {
 import type { PlanInput } from "./itineraries.schema.ts";
 
 const promptSystem =
-  "Bạn là hướng dẫn viên du lịch Đà Nẵng. Chỉ trả lời bằng JSON hợp lệ, không thêm chữ nào khác.";
+  "Bạn là chuyên gia lập kế hoạch du lịch Đà Nẵng. Chỉ trả lời bằng JSON hợp lệ, không thêm bất kỳ văn bản giải thích nào ngoài JSON.";
 
 const tripOf = async (userId: string, tripId: unknown) => {
   const id = readUuidParam(tripId, "chuyến đi");
@@ -40,37 +41,144 @@ const itineraryOf = async (userId: string, itineraryId: unknown) => {
 const tripDays = (trip: { startDate: Date; endDate: Date }) =>
   Math.max(
     1,
-    Math.round((trip.endDate.getTime() - trip.startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1,
+    Math.min(
+      30,
+      Math.round((trip.endDate.getTime() - trip.startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1,
+    ),
   );
 
 const tripRangeEnd = (trip: { endDate: Date }) =>
   new Date(`${trip.endDate.toISOString().slice(0, 10)}T23:59:59.999Z`);
 
-// Bỏ id không tồn tại để AI không ghi được địa điểm bịa vào DB.
-const keepKnownIds = async (items: PlanInput["items"]) => {
+const makeSlotDate = (tripStart: Date, dayNumber: number, hourVn: number, minuteVn = 0): Date => {
+  const base = new Date(tripStart.getTime() + (dayNumber - 1) * 24 * 60 * 60 * 1000);
+  base.setUTCHours(hourVn - 7, minuteVn, 0, 0);
+  return base;
+};
+
+// Tự động ước tính chi phí hợp lý (VNĐ) cho từng địa điểm / hoạt động theo số khách
+const estimateDefaultCost = (
+  item: {
+    title: string;
+    itemType?: string;
+    estimatedCost?: number | null;
+    place?: {
+      category?: string;
+      priceLevel?: number | null;
+      estimatedCostVnd?: number | null;
+    } | null;
+    event?: {
+      isFree?: boolean | null;
+      priceMin?: unknown;
+    } | null;
+  },
+  partySize = 1,
+): number => {
+  if (typeof item.estimatedCost === "number" && item.estimatedCost > 0) {
+    return Math.round(item.estimatedCost);
+  }
+
+  const guests = Math.max(1, partySize);
+  const titleLower = item.title.toLowerCase();
+
+  if (item.event) {
+    if (item.event.isFree) return 0;
+    const min = Number(item.event.priceMin ?? 0);
+    if (min > 0) return Math.round(min * guests);
+  }
+
+  if (item.place) {
+    if (typeof item.place.estimatedCostVnd === "number" && item.place.estimatedCostVnd >= 0) {
+      return Math.round(item.place.estimatedCostVnd * guests);
+    }
+    const level = item.place.priceLevel ?? 1;
+    if (level === 0) {
+      // Biển, chùa miễn phí vé nhưng tính phí gửi xe / nước uống nhẹ
+      if (item.place.category === "beach" || item.place.category === "temple") return 0;
+    }
+    const byLevel: Record<number, number> = {
+      0: 0,
+      1: 65000,
+      2: 160000,
+      3: 450000,
+      4: 850000,
+    };
+    return Math.round((byLevel[level] ?? 100000) * guests);
+  }
+
+  if (titleLower.includes("bà nà") || titleLower.includes("cầu vàng")) return 900000 * guests;
+  if (titleLower.includes("núi thần tài")) return 450000 * guests;
+  if (titleLower.includes("mikazuki")) return 350000 * guests;
+  if (titleLower.includes("hải sản")) return 250000 * guests;
+  if (titleLower.includes("cà phê") || titleLower.includes("cafe") || titleLower.includes("chè")) {
+    return 55000 * guests;
+  }
+  if (
+    item.itemType === "restaurant" ||
+    titleLower.includes("ăn trưa") ||
+    titleLower.includes("ăn tối") ||
+    titleLower.includes("nhà hàng") ||
+    titleLower.includes("bếp cuốn") ||
+    titleLower.includes("mì quảng") ||
+    titleLower.includes("bánh tráng")
+  ) {
+    return 140000 * guests;
+  }
+  if (titleLower.includes("bãi biển") || titleLower.includes("chùa linh ứng") || titleLower.includes("cầu rồng")) {
+    return 0;
+  }
+  if (item.itemType === "transport") return 80000;
+  if (item.itemType === "rest") return 0;
+
+  return 70000 * guests;
+};
+
+// Giữ lại các placeId/eventId có thật trong DB và lấy thông tin chi phí chuẩn
+const keepKnownIds = async (items: PlanInput["items"], partySize = 1) => {
   const placeIds = [...new Set(items.map((item) => item.placeId).filter((id): id is string => !!id))];
   const eventIds = [...new Set(items.map((item) => item.eventId).filter((id): id is string => !!id))];
 
   const [places, events] = await Promise.all([
     placeIds.length > 0
-      ? prisma.place.findMany({ where: { id: { in: placeIds } }, select: { id: true } })
+      ? prisma.place.findMany({
+          where: { id: { in: placeIds } },
+          select: { id: true, category: true, priceLevel: true, estimatedCostVnd: true },
+        })
       : [],
     eventIds.length > 0
-      ? prisma.event.findMany({ where: { id: { in: eventIds } }, select: { id: true } })
+      ? prisma.event.findMany({
+          where: { id: { in: eventIds } },
+          select: { id: true, isFree: true, priceMin: true },
+        })
       : [],
   ]);
 
-  const knownPlaces = new Set(places.map((place) => place.id));
-  const knownEvents = new Set(events.map((event) => event.id));
+  const placeMap = new Map(places.map((p) => [p.id, p]));
+  const eventMap = new Map(events.map((e) => [e.id, e]));
 
-  return items.map((item) => ({
-    ...item,
-    placeId: item.placeId && knownPlaces.has(item.placeId) ? item.placeId : null,
-    eventId: item.eventId && knownEvents.has(item.eventId) ? item.eventId : null,
-  }));
+  return items.map((item) => {
+    const validPlace = item.placeId ? placeMap.get(item.placeId) ?? null : null;
+    const validEvent = item.eventId ? eventMap.get(item.eventId) ?? null : null;
+    const estimatedCost = estimateDefaultCost(
+      {
+        title: item.title,
+        itemType: item.itemType,
+        estimatedCost: item.estimatedCost,
+        place: validPlace,
+        event: validEvent,
+      },
+      partySize,
+    );
+    return {
+      ...item,
+      placeId: validPlace ? validPlace.id : null,
+      eventId: validEvent ? validEvent.id : null,
+      estimatedCost,
+    };
+  });
 };
 
-// AI hay lặp cùng một hoạt động trong ngày; giữ bản đầu tiên.
+// Loại bỏ hoạt động trùng tên trong cùng một ngày
 const dropDuplicates = <T extends { dayNumber: number; title: string }>(items: T[]): T[] => {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -81,12 +189,28 @@ const dropDuplicates = <T extends { dayNumber: number; title: string }>(items: T
   });
 };
 
-const costOf = (items: { estimatedCost?: unknown }[]) =>
+export const costOf = (items: { estimatedCost?: unknown }[]) =>
   items.reduce((sum, item) => sum + Number(item.estimatedCost ?? 0), 0);
 
+// Tính tổng chi phí dự kiến cho từng ngày du lịch
+export const dailyCostsOf = (items: { dayNumber: number; estimatedCost?: unknown }[]) => {
+  const map = new Map<number, number>();
+  for (const item of items) {
+    map.set(item.dayNumber, (map.get(item.dayNumber) ?? 0) + Number(item.estimatedCost ?? 0));
+  }
+  return Object.fromEntries(map.entries());
+};
+
 const rowsOf = (items: PlanInput["items"]) => {
+  const sorted = [...items].sort((a, b) => {
+    if (a.dayNumber !== b.dayNumber) return a.dayNumber - b.dayNumber;
+    const tA = a.startTime ? new Date(a.startTime).getTime() : 0;
+    const tB = b.startTime ? new Date(b.startTime).getTime() : 0;
+    return tA - tB;
+  });
+
   const perDay = new Map<number, number>();
-  return items.map((item) => {
+  return sorted.map((item) => {
     const orderIndex = perDay.get(item.dayNumber) ?? 0;
     perDay.set(item.dayNumber, orderIndex + 1);
     return {
@@ -97,7 +221,8 @@ const rowsOf = (items: PlanInput["items"]) => {
       eventId: item.eventId ?? null,
       title: item.title,
       startTime: item.startTime ?? null,
-      estimatedCost: item.estimatedCost ?? null,
+      endTime: item.endTime ?? null,
+      estimatedCost: item.estimatedCost ?? 0,
       notes: item.notes ?? null,
     };
   });
@@ -130,13 +255,213 @@ const askJson = async (prompt: string): Promise<unknown> => {
   }
 };
 
-const candidateContext = async (userId: string, trip: { startDate: Date; endDate: Date }) => {
-  const [profile, places, events] = await Promise.all([
+// Lấy danh sách địa điểm & sự kiện phục vụ AI lập lịch trình, ưu tiên Đối tác F&B (isSponsored)
+const candidateContext = async (
+  userId: string,
+  trip: { startDate: Date; endDate: Date },
+  options?: { categories?: string[]; preferredPlaceIds?: string[] },
+) => {
+  const categoryFilter =
+    options?.categories && options.categories.length > 0 ? options.categories : undefined;
+
+  const [profile, places, preferredPlaces, events] = await Promise.all([
     prisma.travelerProfile.findFirst({ where: { userId } }),
-    prisma.place.findMany({ where: { isActive: true }, orderBy: { avgRating: "desc" }, take: 15 }),
-    listEventsInRange(trip.startDate, tripRangeEnd(trip)),
+    prisma.place.findMany({
+      where: {
+        isActive: true,
+        ...(categoryFilter
+          ? {
+              OR: [
+                { category: { in: categoryFilter } },
+                { category: { in: ["restaurant", "cafe"] }, isSponsored: true },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [
+        { isSponsored: "desc" },
+        { sponsorPriority: "desc" },
+        { avgRating: "desc" },
+      ],
+      take: 80,
+    }),
+    options?.preferredPlaceIds && options.preferredPlaceIds.length > 0
+      ? prisma.place.findMany({
+          where: { id: { in: options.preferredPlaceIds }, isActive: true },
+        })
+      : Promise.resolve([]),
+    listEventsInRange(trip.startDate, tripRangeEnd(trip), 25),
   ]);
-  return { profile, places, events };
+
+  // Gộp preferredPlaces lên đầu để không bao giờ bị thiếu
+  const mergedPlacesMap = new Map<string, (typeof places)[number]>();
+  for (const p of preferredPlaces) mergedPlacesMap.set(p.id, p);
+  for (const p of places) {
+    if (!mergedPlacesMap.has(p.id)) mergedPlacesMap.set(p.id, p);
+  }
+
+  // Nếu người dùng lọc category quá hẹp dẫn tới ít hơn 15 địa điểm thì lấy bù thêm địa điểm chung
+  if (mergedPlacesMap.size < 20) {
+    const extra = await prisma.place.findMany({
+      where: { isActive: true },
+      orderBy: [{ isSponsored: "desc" }, { avgRating: "desc" }],
+      take: 40,
+    });
+    for (const p of extra) {
+      if (!mergedPlacesMap.has(p.id)) mergedPlacesMap.set(p.id, p);
+    }
+  }
+
+  return { profile, places: [...mergedPlacesMap.values()], preferredPlaces, events };
+};
+
+// RÀNG BUỘC LOGIC AI: Đảm bảo MỖI NGÀY từ ngày 1 đến ngày `days` đều có ÍT NHẤT 3 địa điểm/hoạt động,
+// phân bổ khung giờ hợp lý (Sáng 08:30, Trưa 12:00, Chiều 15:00, Tối 19:00) và gán chi phí đầy đủ.
+const ensureMinItemsPerDay = (
+  rawItems: PlanInput["items"],
+  days: number,
+  tripStart: Date,
+  places: Array<{
+    id: string;
+    name: string;
+    category: string;
+    district: string | null;
+    priceLevel: number | null;
+    estimatedCostVnd: number | null;
+    isSponsored: boolean;
+  }>,
+  preferredPlaces: Array<{
+    id: string;
+    name: string;
+    category: string;
+    district: string | null;
+    priceLevel: number | null;
+    estimatedCostVnd: number | null;
+    isSponsored: boolean;
+  }>,
+  partySize: number,
+): PlanInput["items"] => {
+  const result: PlanInput["items"] = [...rawItems];
+  const usedPlaceIds = new Set<string>(
+    result.map((item) => item.placeId).filter((id): id is string => !!id),
+  );
+
+  // Đảm bảo tất cả địa điểm người dùng đã tích chọn trong Checklist (Option 1) đều có mặt trong lịch trình
+  let targetDayForPreferred = 1;
+  for (const pref of preferredPlaces) {
+    if (!usedPlaceIds.has(pref.id)) {
+      const isFood = pref.category === "restaurant" || pref.category === "cafe";
+      result.push({
+        dayNumber: targetDayForPreferred,
+        title: isFood ? `Thưởng thức tại ${pref.name}` : `Tham quan ${pref.name}`,
+        itemType: pref.category === "restaurant" ? "restaurant" : "place",
+        placeId: pref.id,
+        eventId: null,
+        startTime: makeSlotDate(tripStart, targetDayForPreferred, isFood ? 12 : 9, 0),
+        endTime: makeSlotDate(tripStart, targetDayForPreferred, isFood ? 13 : 11, 30),
+        estimatedCost: estimateDefaultCost({ title: pref.name, place: pref }, partySize),
+        notes: pref.isSponsored
+          ? "Địa điểm ưa thích bạn đã chọn (Đối tác F&B đề xuất)"
+          : "Địa điểm nằm trong danh sách yêu thích bạn đã chọn",
+      });
+      usedPlaceIds.add(pref.id);
+      targetDayForPreferred = (targetDayForPreferred % days) + 1;
+    }
+  }
+
+  const attractions = places.filter((p) => !["restaurant", "cafe"].includes(p.category));
+  const dining = places.filter((p) => p.category === "restaurant" || p.category === "cafe");
+  const allPool = places.length > 0 ? places : [];
+
+  let attrCursor = 0;
+  let diningCursor = 0;
+
+  const pickNextPlace = (preferFood: boolean) => {
+    const primary = preferFood ? dining : attractions;
+    const secondary = preferFood ? attractions : dining;
+
+    // Ưu tiên địa điểm chưa dùng trong toàn chuyến đi
+    for (const p of primary) {
+      if (!usedPlaceIds.has(p.id)) {
+        usedPlaceIds.add(p.id);
+        return p;
+      }
+    }
+    for (const p of secondary) {
+      if (!usedPlaceIds.has(p.id)) {
+        usedPlaceIds.add(p.id);
+        return p;
+      }
+    }
+    // Nếu chuyến đi dài (ví dụ 10 ngày) và đã dùng hết vòng 1, xoay vòng hợp lý
+    if (preferFood && dining.length > 0) {
+      const p = dining[diningCursor % dining.length]!;
+      diningCursor += 1;
+      return p;
+    }
+    if (attractions.length > 0) {
+      const p = attractions[attrCursor % attractions.length]!;
+      attrCursor += 1;
+      return p;
+    }
+    return allPool[0] ?? null;
+  };
+
+  const slotTemplates = [
+    { startHour: 8, endHour: 11, preferFood: false, prefix: "Khám phá buổi sáng:" },
+    { startHour: 12, endHour: 13, preferFood: true, prefix: "Thưởng thức ẩm thực trưa:" },
+    { startHour: 15, endHour: 17, preferFood: false, prefix: "Tham quan & Trải nghiệm chiều:" },
+    { startHour: 19, endHour: 21, preferFood: true, prefix: "Ẩm thực & Dạo phố tối:" },
+  ];
+
+  for (let day = 1; day <= days; day += 1) {
+    const dayItems = result.filter((item) => item.dayNumber === day);
+    const usedTitlesInDay = new Set(dayItems.map((i) => i.title.trim().toLowerCase()));
+
+    let slotIdx = dayItems.length;
+    // Bắt buộc mỗi ngày phải có tối thiểu 3 hoạt động (và khuyến nghị 4 hoạt động Sáng-Trưa-Chiều-Tối)
+    const minRequired = 4;
+    while (result.filter((item) => item.dayNumber === day).length < minRequired && slotIdx < 6) {
+      const template = slotTemplates[slotIdx % slotTemplates.length]!;
+      const place = pickNextPlace(template.preferFood);
+      slotIdx += 1;
+
+      if (!place) break;
+
+      const candidateTitle = `${template.prefix} ${place.name}`;
+      if (usedTitlesInDay.has(candidateTitle.toLowerCase())) continue;
+      usedTitlesInDay.add(candidateTitle.toLowerCase());
+
+      result.push({
+        dayNumber: day,
+        title: candidateTitle,
+        itemType: place.category === "restaurant" || place.category === "cafe" ? "restaurant" : "place",
+        placeId: place.id,
+        eventId: null,
+        startTime: makeSlotDate(tripStart, day, template.startHour, 0),
+        endTime: makeSlotDate(tripStart, day, template.endHour, 30),
+        estimatedCost: estimateDefaultCost({ title: candidateTitle, place }, partySize),
+        notes: place.isSponsored
+          ? `⭐ Đối tác F&B Đề xuất tại ${place.district ?? "Đà Nẵng"}`
+          : `Khu vực ${place.district ?? "Đà Nẵng"}`,
+      });
+    }
+
+    // Gán khung giờ mặc định cho các item trong ngày nếu AI quên trả startTime/endTime
+    const finalDayItems = result.filter((item) => item.dayNumber === day);
+    finalDayItems.forEach((item, idx) => {
+      const fallbackHours = [8, 12, 15, 19, 21];
+      const h = fallbackHours[idx % fallbackHours.length] ?? 9;
+      if (!item.startTime) {
+        item.startTime = makeSlotDate(tripStart, day, h, 0);
+      }
+      if (!item.endTime) {
+        item.endTime = makeSlotDate(tripStart, day, Math.min(23, h + 2), 0);
+      }
+    });
+  }
+
+  return result;
 };
 
 const weatherLines = async (start: Date, days: number) => {
@@ -170,19 +495,31 @@ export const savePlan = async (
   chatSessionId: string | null = null,
 ) => {
   const trip = await tripOf(userId, tripId);
-  const items = dropDuplicates(await keepKnownIds(plan.items));
+  const days = tripDays(trip);
+  const partySize = Math.max(1, trip.adults + trip.children + trip.companions.length);
+  const { places } = await candidateContext(userId, trip);
+
+  const known = dropDuplicates(await keepKnownIds(plan.items, partySize));
+  const completeItems = ensureMinItemsPerDay(
+    known,
+    days,
+    trip.startDate,
+    places,
+    [],
+    partySize,
+  );
 
   return prisma.itinerary.create({
     data: {
       tripId: trip.id,
       chatSessionId,
-      title: plan.title ?? `Lịch trình ${trip.title ?? "Đà Nẵng"}`,
+      title: plan.title ?? `Lịch trình ${trip.title ?? "Đà Nẵng"} (${days} ngày)`,
       status: "draft",
       version: await nextVersion(trip.id),
       reason: plan.reason ?? null,
       generatedBy,
-      totalEstimatedCost: costOf(items),
-      items: { create: rowsOf(items) },
+      totalEstimatedCost: costOf(completeItems),
+      items: { create: rowsOf(completeItems) },
     },
     include: { items: { orderBy: [{ dayNumber: "asc" }, { orderIndex: "asc" }] } },
   });
@@ -204,16 +541,80 @@ export const getItinerary = async (userId: string, itineraryId: unknown) => {
       where: {
         id: { in: itinerary.items.map((item) => item.placeId).filter((id): id is string => !!id) },
       },
-      select: { id: true, name: true, address: true, latitude: true, longitude: true },
+      select: {
+        id: true,
+        name: true,
+        category: true,
+        district: true,
+        address: true,
+        latitude: true,
+        longitude: true,
+        isSponsored: true,
+        sponsorTier: true,
+        estimatedCostVnd: true,
+      },
     }),
     prisma.event.findMany({
       where: {
         id: { in: itinerary.items.map((item) => item.eventId).filter((id): id is string => !!id) },
       },
-      select: { id: true, title: true, venue: true, startAt: true },
+      select: {
+        id: true,
+        title: true,
+        venue: true,
+        startAt: true,
+        endAt: true,
+        latitude: true,
+        longitude: true,
+      },
     }),
   ]);
-  return { itinerary, places, events };
+  const dailyCosts = dailyCostsOf(itinerary.items);
+  return { itinerary, places, events, dailyCosts };
+};
+
+// Sắp xếp lại orderIndex an toàn cho một ngày trong transaction để tránh đụng unique constraint
+const resequenceDayTx = async (
+  tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+  itineraryId: string,
+  dayNumber: number,
+  orderedIds?: string[],
+) => {
+  const items = await tx.itineraryItem.findMany({
+    where: { itineraryId, dayNumber },
+    orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+  });
+
+  const sorted = orderedIds
+    ? orderedIds
+        .map((id) => items.find((row) => row.id === id))
+        .filter((row): row is (typeof items)[number] => !!row)
+    : items;
+
+  // Bước 1: dịch tạm orderIndex + 1000 để tránh trùng khóa (itineraryId, dayNumber, orderIndex)
+  for (let i = 0; i < sorted.length; i += 1) {
+    await tx.itineraryItem.update({
+      where: { id: sorted[i]!.id },
+      data: { orderIndex: 1000 + i },
+    });
+  }
+  // Bước 2: gán lại 0..n-1 chuẩn xác
+  for (let i = 0; i < sorted.length; i += 1) {
+    await tx.itineraryItem.update({
+      where: { id: sorted[i]!.id },
+      data: { orderIndex: i },
+    });
+  }
+};
+
+const syncTotalCost = async (itineraryId: string) => {
+  const items = await prisma.itineraryItem.findMany({ where: { itineraryId } });
+  const total = costOf(items);
+  await prisma.itinerary.update({
+    where: { id: itineraryId },
+    data: { totalEstimatedCost: total },
+  });
+  return total;
 };
 
 export const updateItem = async (
@@ -228,24 +629,144 @@ export const updateItem = async (
   if (!item) throw new AppError(404, "Không tìm thấy hoạt động trong lịch trình này");
 
   const input = parseInput(updateItemSchema, body);
-  const updated = await prisma.itineraryItem.update({
-    where: { id },
-    data: {
-      ...(input.dayNumber !== undefined ? { dayNumber: input.dayNumber } : {}),
-      ...(input.orderIndex !== undefined ? { orderIndex: input.orderIndex } : {}),
-      ...(input.title !== undefined ? { title: input.title } : {}),
-      ...(input.itemType !== undefined ? { itemType: input.itemType } : {}),
-      ...(input.notes !== undefined ? { notes: input.notes ?? null } : {}),
-      ...(input.startTime !== undefined ? { startTime: input.startTime ?? null } : {}),
-    },
+  const targetDay = input.dayNumber ?? item.dayNumber;
+  const targetOrder = input.orderIndex ?? item.orderIndex;
+
+  await prisma.$transaction(async (tx) => {
+    // Đẩy tạm sang orderIndex lớn để không đụng unique constraint khi đổi ngày/thứ tự
+    await tx.itineraryItem.update({
+      where: { id },
+      data: {
+        dayNumber: targetDay,
+        orderIndex: 9999,
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.itemType !== undefined ? { itemType: input.itemType } : {}),
+        ...(input.placeId !== undefined ? { placeId: input.placeId ?? null } : {}),
+        ...(input.eventId !== undefined ? { eventId: input.eventId ?? null } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes ?? null } : {}),
+        ...(input.startTime !== undefined ? { startTime: input.startTime ?? null } : {}),
+        ...(input.endTime !== undefined ? { endTime: input.endTime ?? null } : {}),
+        ...(input.estimatedCost !== undefined ? { estimatedCost: input.estimatedCost ?? 0 } : {}),
+      },
+    });
+
+    const dayItems = await tx.itineraryItem.findMany({
+      where: { itineraryId: itinerary.id, dayNumber: targetDay, id: { not: id } },
+      orderBy: { orderIndex: "asc" },
+    });
+    const clampedIndex = Math.max(0, Math.min(targetOrder, dayItems.length));
+    const orderedIds = dayItems.map((r) => r.id);
+    orderedIds.splice(clampedIndex, 0, id);
+
+    await resequenceDayTx(tx, itinerary.id, targetDay, orderedIds);
+    if (targetDay !== item.dayNumber) {
+      await resequenceDayTx(tx, itinerary.id, item.dayNumber);
+    }
   });
 
-  const items = await prisma.itineraryItem.findMany({ where: { itineraryId: itinerary.id } });
-  await prisma.itinerary.update({
-    where: { id: itinerary.id },
-    data: { totalEstimatedCost: costOf(items) },
+  await syncTotalCost(itinerary.id);
+  return prisma.itineraryItem.findUniqueOrThrow({ where: { id } });
+};
+
+// Xoá 1 hoạt động khỏi lịch trình và tự động cập nhật lại thứ tự + tổng chi phí
+export const deleteItem = async (userId: string, itineraryId: unknown, itemId: unknown) => {
+  const itinerary = await itineraryOf(userId, itineraryId);
+  const id = readUuidParam(itemId, "hoạt động");
+  const item = itinerary.items.find((row) => row.id === id);
+  if (!item) throw new AppError(404, "Không tìm thấy hoạt động trong lịch trình này");
+
+  await prisma.$transaction(async (tx) => {
+    await tx.itineraryItem.delete({ where: { id } });
+    await resequenceDayTx(tx, itinerary.id, item.dayNumber);
   });
-  return updated;
+
+  await syncTotalCost(itinerary.id);
+};
+
+// Đổi thứ tự hoạt động lên/xuống trong ngày
+export const moveItem = async (
+  userId: string,
+  itineraryId: unknown,
+  itemId: unknown,
+  body: unknown,
+) => {
+  const itinerary = await itineraryOf(userId, itineraryId);
+  const id = readUuidParam(itemId, "hoạt động");
+  const { direction } = parseInput(moveItemSchema, body);
+
+  const dayItems = itinerary.items
+    .filter((row) => row.dayNumber === itinerary.items.find((i) => i.id === id)?.dayNumber)
+    .sort((a, b) => a.orderIndex - b.orderIndex);
+
+  const currentIdx = dayItems.findIndex((row) => row.id === id);
+  if (currentIdx === -1) throw new AppError(404, "Không tìm thấy hoạt động");
+
+  const swapIdx = direction === "up" ? currentIdx - 1 : currentIdx + 1;
+  if (swapIdx < 0 || swapIdx >= dayItems.length) {
+    return itinerary;
+  }
+
+  const orderedIds = dayItems.map((r) => r.id);
+  const [moved] = orderedIds.splice(currentIdx, 1);
+  orderedIds.splice(swapIdx, 0, moved!);
+
+  const dayNumber = dayItems[currentIdx]!.dayNumber;
+  await prisma.$transaction(async (tx) => {
+    await resequenceDayTx(tx, itinerary.id, dayNumber, orderedIds);
+  });
+
+  return itineraryOf(userId, itinerary.id);
+};
+
+// Tự động tính lại chi phí bằng AI / định mức thông minh cho toàn bộ hoạt động trong lịch trình
+export const estimateItineraryCosts = async (userId: string, itineraryId: unknown) => {
+  const itinerary = await itineraryOf(userId, itineraryId);
+  const trip = await prisma.trip.findUniqueOrThrow({
+    where: { id: itinerary.tripId },
+    include: { companions: true },
+  });
+  const partySize = Math.max(1, trip.adults + trip.children + trip.companions.length);
+
+  const [places, events] = await Promise.all([
+    prisma.place.findMany({
+      where: {
+        id: { in: itinerary.items.map((i) => i.placeId).filter((id): id is string => !!id) },
+      },
+    }),
+    prisma.event.findMany({
+      where: {
+        id: { in: itinerary.items.map((i) => i.eventId).filter((id): id is string => !!id) },
+      },
+    }),
+  ]);
+  const placeMap = new Map(places.map((p) => [p.id, p]));
+  const eventMap = new Map(events.map((e) => [e.id, e]));
+
+  for (const item of itinerary.items) {
+    const place = item.placeId ? placeMap.get(item.placeId) ?? null : null;
+    const event = item.eventId ? eventMap.get(item.eventId) ?? null : null;
+    const currentCost = Number(item.estimatedCost ?? 0);
+    const recalculated = estimateDefaultCost(
+      {
+        title: item.title,
+        itemType: item.itemType,
+        estimatedCost: currentCost > 0 ? currentCost : null,
+        place,
+        event,
+      },
+      partySize,
+    );
+
+    if (recalculated !== currentCost) {
+      await prisma.itineraryItem.update({
+        where: { id: item.id },
+        data: { estimatedCost: recalculated },
+      });
+    }
+  }
+
+  await syncTotalCost(itinerary.id);
+  return getItinerary(userId, itinerary.id);
 };
 
 export const listImpacts = async (userId: string, tripId: unknown) => {
@@ -261,8 +782,6 @@ export const listImpacts = async (userId: string, tripId: unknown) => {
   });
 };
 
-// Tạo phiên bản mới từ một lịch trình có sẵn, dùng chung cho what-if, thêm hoạt
-// động và áp dụng cảnh báo.
 const newVersionFrom = async (
   source: {
     id: string;
@@ -298,6 +817,7 @@ const itemsOf = (source: {
     eventId: string | null;
     title: string;
     startTime: Date | null;
+    endTime?: Date | null;
     estimatedCost: unknown;
     notes: string | null;
   }[];
@@ -309,12 +829,11 @@ const itemsOf = (source: {
     placeId: item.placeId,
     eventId: item.eventId,
     startTime: item.startTime,
+    endTime: item.endTime ?? null,
     estimatedCost: item.estimatedCost === null ? null : Number(item.estimatedCost),
     notes: item.notes,
   }));
 
-// Áp dụng cảnh báo: nhờ AI thay hoạt động bị ảnh hưởng bằng hoạt động khác cùng
-// ngày; AI lỗi thì bỏ hoạt động đó như trước.
 export const applyImpact = async (userId: string, itineraryId: unknown, impactId: unknown) => {
   const itinerary = await itineraryOf(userId, itineraryId);
   const id = readUuidParam(impactId, "cảnh báo");
@@ -336,8 +855,13 @@ export const applyImpact = async (userId: string, itineraryId: unknown, impactId
   );
 
   let replacement: PlanInput["items"][number] | null = null;
+  const trip = await prisma.trip.findUniqueOrThrow({
+    where: { id: itinerary.tripId },
+    include: { companions: true },
+  });
+  const partySize = Math.max(1, trip.adults + trip.children + trip.companions.length);
+
   if (impact.itineraryItem) {
-    const trip = await prisma.trip.findUniqueOrThrow({ where: { id: itinerary.tripId } });
     const { places, events } = await candidateContext(userId, trip);
 
     try {
@@ -345,9 +869,9 @@ export const applyImpact = async (userId: string, itineraryId: unknown, impactId
         [
           `Sự kiện "${impact.eventVersion.event?.title ?? removed}" ${changeLabel}, hoạt động "${removed}" ngày ${impact.itineraryItem.dayNumber} không còn dùng được.`,
           "Chọn MỘT hoạt động thay thế cùng ngày, chỉ dùng id trong danh sách dưới đây.",
-          `Địa điểm: ${JSON.stringify(places.map((place) => ({ id: place.id, name: place.name, category: place.category, district: place.district })))}`,
+          `Địa điểm: ${JSON.stringify(places.slice(0, 30).map((place) => ({ id: place.id, name: place.name, category: place.category, district: place.district, estimatedCostVnd: place.estimatedCostVnd })))}`,
           `Sự kiện khác: ${JSON.stringify(events.map((event) => ({ id: event.id, title: event.title, startAt: event.startAt })))}`,
-          'Trả về DUY NHẤT JSON dạng {"title": string, "itemType": "place|restaurant|activity|event|transport|rest", "placeId": string|null, "eventId": string|null, "startTime": string|null, "notes": string|null}.',
+          'Trả về DUY NHẤT JSON dạng {"title": string, "itemType": "place|restaurant|activity|event|transport|rest", "placeId": string|null, "eventId": string|null, "startTime": string|null, "estimatedCost": number|null, "notes": string|null}.',
         ].join("\n"),
       );
       const parsed = itemSchema.safeParse({
@@ -356,11 +880,13 @@ export const applyImpact = async (userId: string, itineraryId: unknown, impactId
       });
       if (parsed.success) replacement = parsed.data;
     } catch {
-      // giữ nguyên hành vi cũ: chỉ bỏ hoạt động bị ảnh hưởng
+      // Fallback sang địa điểm thay thế tự động
     }
   }
 
-  const known = replacement ? dropDuplicates(await keepKnownIds([...kept, replacement])) : kept;
+  const known = replacement
+    ? dropDuplicates(await keepKnownIds([...kept, replacement], partySize))
+    : await keepKnownIds(kept, partySize);
   const reason = replacement
     ? `Đổi "${removed}" sang "${replacement.title}" vì sự kiện ${changeLabel}`
     : `Đã bỏ "${removed}" do sự kiện ${changeLabel}`;
@@ -390,7 +916,6 @@ export const diffItineraries = async (userId: string, itineraryId: unknown, othe
   };
 };
 
-// Mỗi chuyến chỉ một bản đang dùng.
 export const activateItinerary = async (userId: string, itineraryId: unknown) => {
   const itinerary = await itineraryOf(userId, itineraryId);
   await prisma.$transaction([
@@ -416,11 +941,45 @@ export const deleteItinerary = async (userId: string, itineraryId: unknown) => {
 
 export const addItem = async (userId: string, itineraryId: unknown, body: unknown) => {
   const itinerary = await itineraryOf(userId, itineraryId);
+  const trip = await prisma.trip.findUniqueOrThrow({
+    where: { id: itinerary.tripId },
+    include: { companions: true },
+  });
+  const partySize = Math.max(1, trip.adults + trip.children + trip.companions.length);
   const input = parseInput(addItemSchema, body);
-  const [known] = await keepKnownIds([
-    { ...input, placeId: input.placeId ?? null, eventId: input.eventId ?? null },
-  ]);
+  const [known] = await keepKnownIds(
+    [
+      {
+        ...input,
+        placeId: input.placeId ?? null,
+        eventId: input.eventId ?? null,
+      },
+    ],
+    partySize,
+  );
   if (!known) throw new AppError(400, "Dữ liệu hoạt động không hợp lệ");
+
+  // Mặc định sửa trực tiếp (inPlace = true) để người dùng thêm/bớt/sửa linh hoạt ngay trên bản hiện tại
+  if (input.inPlace !== false) {
+    const dayItemsCount = itinerary.items.filter((i) => i.dayNumber === known.dayNumber).length;
+    await prisma.itineraryItem.create({
+      data: {
+        itineraryId: itinerary.id,
+        dayNumber: known.dayNumber,
+        orderIndex: dayItemsCount,
+        itemType: known.itemType,
+        placeId: known.placeId ?? null,
+        eventId: known.eventId ?? null,
+        title: known.title,
+        startTime: known.startTime ?? makeSlotDate(trip.startDate, known.dayNumber, 9 + dayItemsCount * 3, 0),
+        endTime: known.endTime ?? makeSlotDate(trip.startDate, known.dayNumber, 11 + dayItemsCount * 3, 0),
+        estimatedCost: known.estimatedCost ?? 0,
+        notes: known.notes ?? null,
+      },
+    });
+    await syncTotalCost(itinerary.id);
+    return itineraryOf(userId, itinerary.id);
+  }
 
   return newVersionFrom(
     itinerary,
@@ -435,67 +994,165 @@ export const generateItinerary = async (userId: string, tripId: unknown, body: u
   const trip = await tripOf(userId, tripId);
   const input = parseInput(generateSchema, body ?? {});
   const days = tripDays(trip);
-  const [{ profile, places, events }, weather] = await Promise.all([
-    candidateContext(userId, trip),
+  const partySize = Math.max(1, trip.adults + trip.children + trip.companions.length);
+
+  const [{ profile, places, preferredPlaces, events }, weather] = await Promise.all([
+    candidateContext(userId, trip, {
+      categories: input.categories,
+      preferredPlaceIds: input.preferredPlaceIds,
+    }),
     weatherLines(trip.startDate, days),
   ]);
 
+  const modeDescription =
+    input.mode === "checklist"
+      ? [
+          "PHƯƠNG THỨC 1 (TÙY CHỌN THEO DANH MỤC / CHECKLIST):",
+          input.categories && input.categories.length > 0
+            ? `- Các danh mục người dùng đã tích chọn ưu tiên: ${input.categories.join(", ")}.`
+            : "",
+          preferredPlaces.length > 0
+            ? `- BẮT BUỘC đưa toàn bộ các địa điểm người dùng đã tích chọn sau vào lịch trình: ${preferredPlaces.map((p) => `${p.name} (id: ${p.id})`).join(", ")}.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : [
+          "PHƯƠNG THỨC 2 (GỢI Ý TỰ ĐỘNG TỪ AI):",
+          "- Tự động đề xuất toàn bộ lịch trình tối ưu dựa trên vị trí địa lý gần nhau theo từng ngày, dự báo thời tiết và xu hướng nổi bật tại Đà Nẵng.",
+          input.userLatitude && input.userLongitude
+            ? `- Vị trí GPS hiện tại của khách hàng: (${input.userLatitude}, ${input.userLongitude}). Ngày đầu tiên ưu tiên các địa điểm thuận tiện di chuyển từ vị trí này.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+
   const prompt = [
     `Lập lịch trình ${days} ngày tại Đà Nẵng cho chuyến đi từ ${trip.startDate.toISOString().slice(0, 10)} đến ${trip.endDate.toISOString().slice(0, 10)}.`,
-    `Số người: ${trip.adults} người lớn, ${trip.children} trẻ em, ${trip.companions.length} người đồng hành.`,
-    trip.companions.length > 0
-      ? `Người đồng hành: ${trip.companions
-          .map((companion) => `${companion.name ?? "không tên"}${companion.age ? ` (${companion.age} tuổi)` : ""}`)
-          .join(", ")}.`
-      : "",
+    `Số khách: ${trip.adults} người lớn, ${trip.children} trẻ em, ${trip.companions.length} người đồng hành (Tổng cộng ${partySize} người).`,
+    modeDescription,
     profile
-      ? `Sở thích: ${profile.interests.join(", ") || "không nêu"}. Không muốn: ${profile.dislikes.join(", ") || "không nêu"}. Phong cách: ${profile.travelStyle ?? "không nêu"}. Ngân sách: ${profile.budgetMin ?? "?"}-${profile.budgetMax ?? "?"} ${profile.currency ?? "VND"}.`
-      : "Chưa có hồ sơ du khách.",
-    input.notes ? `Yêu cầu thêm: ${input.notes}` : "",
+      ? `Sở thích: ${profile.interests.join(", ") || "đa dạng"}. Không muốn: ${profile.dislikes.join(", ") || "không"}. Phong cách: ${profile.travelStyle ?? "linh hoạt"}. Ngân sách: ${profile.budgetMin ?? "?"}-${profile.budgetMax ?? "?"} ${profile.currency ?? "VND"}.`
+      : "",
+    input.notes ? `Yêu cầu bổ sung của khách: ${input.notes}` : "",
     weather.lines.length > 0
-      ? `Dự báo thời tiết:\n${weather.lines.join("\n")}\nNgày mưa thì ưu tiên hoạt động trong nhà (bảo tàng, chợ, workshop, quán cà phê).`
+      ? `Dự báo thời tiết:\n${weather.lines.join("\n")}\nNgày mưa ưu tiên hoạt động trong nhà (bảo tàng, chợ, cà phê, công viên nước trong nhà).`
       : "",
+    "RÀNG BUỘC LOGIC BẮT BUỘC:",
+    `1. Phải lập lịch trình đầy đủ cho TẤT CẢ ${days} ngày (từ dayNumber = 1 đến dayNumber = ${days}).`,
+    "2. MỖI NGÀY BẮT BUỘC PHẢI CÓ ÍT NHẤT 3 ĐẾN 4 ĐỊA ĐIỂM/HOẠT ĐỘNG (Sáng 08:30, Trưa 12:00 ăn trưa, Chiều 15:00 tham quan/cà phê, Tối 19:00 ăn tối/dạo phố/sự kiện). Tuyệt đối không để ngày nào chỉ có 1 hoặc 2 địa điểm.",
+    `3. Tự động dự toán và gán chi phí "estimatedCost" (bằng số tiền VNĐ cho cả đoàn ${partySize} người) phù hợp cho từng hoạt động dựa trên trường estimatedCostVnd của địa điểm.`,
+    "4. Khi đề xuất quán ăn (restaurant) hoặc cà phê (cafe), ƯU TIÊN chọn các địa điểm có isSponsored = true (Đối tác F&B đề xuất).",
+    `Địa điểm hệ thống: ${JSON.stringify(
+      places.slice(0, 50).map((place) => ({
+        id: place.id,
+        name: place.name,
+        district: place.district,
+        category: place.category,
+        estimatedCostVnd: place.estimatedCostVnd,
+        isSponsored: place.isSponsored,
+      })),
+    )}`,
     events.length > 0
-      ? "Phải chèn các sự kiện đang diễn ra trong khoảng ngày của chuyến đi, ít nhất một sự kiện mỗi ngày có sự kiện."
+      ? `Sự kiện trong chuyến đi: ${JSON.stringify(
+          events.slice(0, 15).map((event) => ({
+            id: event.id,
+            title: event.title,
+            venue: event.venue,
+            startAt: event.startAt,
+            endAt: event.endAt,
+            priceMin: event.priceMin,
+          })),
+        )}`
       : "",
-    "Chỉ được dùng địa điểm và sự kiện trong danh sách dưới đây, không bịa thêm.",
-    `Địa điểm: ${JSON.stringify(places.map((place) => ({ id: place.id, name: place.name, district: place.district, category: place.category, tags: place.tags })))}`,
-    `Sự kiện: ${JSON.stringify(events.map((event) => ({ id: event.id, title: event.title, venue: event.venue, startAt: event.startAt })))}`,
-    'Trả về DUY NHẤT JSON dạng {"title": string, "reason": string, "items": [{"dayNumber": number, "title": string, "itemType": "place|restaurant|activity|event|transport|rest", "placeId": string|null, "eventId": string|null, "startTime": string|null, "estimatedCost": number|null, "notes": string|null}]}.',
+    'Trả về DUY NHẤT JSON hợp lệ dạng {"title": string, "reason": string, "items": [{"dayNumber": number, "title": string, "itemType": "place|restaurant|activity|event|transport|rest", "placeId": string|null, "eventId": string|null, "startTime": string|null, "endTime": string|null, "estimatedCost": number, "notes": string|null}]}.',
   ]
     .filter(Boolean)
     .join("\n");
 
-  const parsed = await askJson(prompt);
-  const plan = planSchema.safeParse(parsed);
-  if (!plan.success) throw new AppError(502, "AI trả về dữ liệu không hợp lệ, thử lại");
+  let aiItems: PlanInput["items"] = [];
+  let aiTitle =
+    input.mode === "checklist"
+      ? `Lịch trình Đà Nẵng ${days} ngày (Theo danh mục chọn lọc)`
+      : `Lịch trình Đà Nẵng ${days} ngày (Đề xuất thông minh AI)`;
+  let aiReason =
+    input.mode === "checklist"
+      ? `Tạo theo danh mục & địa điểm ưa thích (${days} ngày, tối thiểu 4 điểm/ngày, tự động tính chi phí)`
+      : `Gợi ý tự động từ AI theo thời tiết, vị trí & xu hướng (${days} ngày, đầy đủ Sáng-Trưa-Chiều-Tối)`;
 
-  const reason = weather.rainyDays.length > 0
-    ? `${plan.data.reason ?? "Lịch trình mới"}. Ngày mưa (${weather.rainyDays.join(", ")}) đã xếp hoạt động trong nhà.`
-    : plan.data.reason;
+  try {
+    const parsed = await askJson(prompt);
+    const plan = planSchema.safeParse(parsed);
+    if (plan.success) {
+      aiItems = plan.data.items;
+      if (plan.data.title) aiTitle = plan.data.title;
+      if (plan.data.reason) aiReason = plan.data.reason;
+    }
+  } catch (err) {
+    console.warn("[itineraries] AI timeout/error, dùng bộ lập lịch trình chuẩn hoá:", err);
+  }
 
-  return savePlan(userId, trip.id, { ...plan.data, reason }, "ai", input.chatSessionId ?? null);
+  // Hậu kiểm & lấp đầy đảm bảo 100% mỗi ngày đều có >= 3-4 địa điểm + chi phí đầy đủ
+  const known = dropDuplicates(await keepKnownIds(aiItems, partySize));
+  const completeItems = ensureMinItemsPerDay(
+    known,
+    days,
+    trip.startDate,
+    places,
+    preferredPlaces,
+    partySize,
+  );
+
+  const reason =
+    weather.rainyDays.length > 0
+      ? `${aiReason}. Ngày mưa (${weather.rainyDays.join(", ")}) đã ưu tiên hoạt động trong nhà.`
+      : aiReason;
+
+  return prisma.itinerary.create({
+    data: {
+      tripId: trip.id,
+      chatSessionId: input.chatSessionId ?? null,
+      title: aiTitle,
+      status: "draft",
+      version: await nextVersion(trip.id),
+      reason,
+      generatedBy: "ai",
+      totalEstimatedCost: costOf(completeItems),
+      items: { create: rowsOf(completeItems) },
+    },
+    include: { items: { orderBy: [{ dayNumber: "asc" }, { orderIndex: "asc" }] } },
+  });
 };
 
-// What-if: sinh phiên bản mới theo kịch bản, không tự áp dụng.
 export const whatIf = async (userId: string, tripId: unknown, body: unknown) => {
   const trip = await tripOf(userId, tripId);
   const input = parseInput(whatIfSchema, body);
   const source = await itineraryOf(userId, input.itineraryId);
   if (source.tripId !== trip.id) throw new AppError(404, "Không tìm thấy lịch trình");
 
+  const days = tripDays(trip);
+  const partySize = Math.max(1, trip.adults + trip.children + trip.companions.length);
   const { places, events } = await candidateContext(userId, trip);
-  const weather = await weatherLines(trip.startDate, tripDays(trip));
+  const weather = await weatherLines(trip.startDate, days);
 
   const prompt = [
     `Lịch trình hiện tại (JSON): ${JSON.stringify(itemsOf(source))}`,
     `Kịch bản người dùng muốn xử lý: ${input.scenario}`,
     weather.lines.length > 0 ? `Dự báo thời tiết:\n${weather.lines.join("\n")}` : "",
-    "Giữ nguyên các hoạt động không bị kịch bản ảnh hưởng, chỉ đổi những chỗ cần đổi.",
-    "Chỉ được dùng địa điểm và sự kiện trong danh sách dưới đây, không bịa thêm.",
-    `Địa điểm: ${JSON.stringify(places.map((place) => ({ id: place.id, name: place.name, district: place.district, category: place.category, tags: place.tags })))}`,
+    `Đảm bảo mỗi ngày (từ ngày 1 đến ngày ${days}) vẫn có ít nhất 3-4 hoạt động và đầy đủ estimatedCost (VNĐ).`,
+    "Khi đổi sang quán ăn/cà phê, ưu tiên các địa điểm có isSponsored = true.",
+    `Địa điểm: ${JSON.stringify(
+      places.slice(0, 45).map((place) => ({
+        id: place.id,
+        name: place.name,
+        district: place.district,
+        category: place.category,
+        estimatedCostVnd: place.estimatedCostVnd,
+        isSponsored: place.isSponsored,
+      })),
+    )}`,
     `Sự kiện: ${JSON.stringify(events.map((event) => ({ id: event.id, title: event.title, venue: event.venue, startAt: event.startAt })))}`,
-    'Trả về DUY NHẤT JSON dạng {"title": string, "reason": string, "items": [{"dayNumber": number, "title": string, "itemType": "place|restaurant|activity|event|transport|rest", "placeId": string|null, "eventId": string|null, "startTime": string|null, "estimatedCost": number|null, "notes": string|null}]}.',
+    'Trả về DUY NHẤT JSON dạng {"title": string, "reason": string, "items": [{"dayNumber": number, "title": string, "itemType": "place|restaurant|activity|event|transport|rest", "placeId": string|null, "eventId": string|null, "startTime": string|null, "endTime": string|null, "estimatedCost": number|null, "notes": string|null}]}.',
   ]
     .filter(Boolean)
     .join("\n");
@@ -504,10 +1161,12 @@ export const whatIf = async (userId: string, tripId: unknown, body: unknown) => 
   const plan = planSchema.safeParse(parsed);
   if (!plan.success) throw new AppError(502, "AI trả về dữ liệu không hợp lệ, thử lại");
 
-  const known = dropDuplicates(await keepKnownIds(plan.data.items));
+  const known = dropDuplicates(await keepKnownIds(plan.data.items, partySize));
+  const completeItems = ensureMinItemsPerDay(known, days, trip.startDate, places, [], partySize);
+
   const created = await newVersionFrom(
     { ...source, chatSessionId: input.chatSessionId ?? source.chatSessionId },
-    known,
+    completeItems,
     plan.data.reason ?? `Kịch bản: ${input.scenario}`,
   );
 

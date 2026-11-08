@@ -99,9 +99,17 @@ export type Place = {
   latitude: string | null;
   longitude: string | null;
   priceLevel: number | null;
+  estimatedCostVnd: number | null;
   avgRating: string | null;
   tags: string[];
   description: string | null;
+  isSponsored: boolean;
+  sponsorTier: string | null;
+  sponsorPriority: number;
+  partnerName: string | null;
+  partnerContact: string | null;
+  contractStartAt: string | null;
+  contractEndAt: string | null;
 };
 
 export type PlacePage = {
@@ -121,6 +129,7 @@ export type Event = {
   longitude: string | null;
   startAt: string;
   endAt: string | null;
+  timeStatus?: "ongoing" | "upcoming" | "ended";
   isFree: boolean | null;
   priceMin: string | null;
   priceMax: string | null;
@@ -148,8 +157,16 @@ export type PlaceInput = {
   latitude?: number | null;
   longitude?: number | null;
   priceLevel?: number | null;
+  estimatedCostVnd?: number | null;
   avgRating?: number | null;
   tags?: string[];
+  isSponsored?: boolean;
+  sponsorTier?: string | null;
+  sponsorPriority?: number;
+  partnerName?: string | null;
+  partnerContact?: string | null;
+  contractStartAt?: string | null;
+  contractEndAt?: string | null;
 };
 
 export type EventInput = {
@@ -190,7 +207,7 @@ export type DataSource = {
 
 export type DataSourceInput = {
   name: string;
-  sourceType: "file" | "api";
+  sourceType: "file" | "api" | "danang_web";
   url?: string;
   // Nội dung file JSON, chỉ gửi khi thêm hoặc thay file cho nguồn loại file.
   content?: string;
@@ -297,14 +314,36 @@ export type Itinerary = {
 
 export type ItineraryDetail = {
   itinerary: Itinerary;
+  dailyCosts?: Record<number, number>;
   places: {
     id: string;
     name: string;
+    category?: string;
+    district?: string | null;
     address: string | null;
     latitude: string | null;
     longitude: string | null;
+    isSponsored?: boolean;
+    sponsorTier?: string | null;
+    estimatedCostVnd?: number | null;
   }[];
-  events: { id: string; title: string; venue: string | null; startAt: string }[];
+  events: {
+    id: string;
+    title: string;
+    venue: string | null;
+    startAt: string;
+    endAt?: string | null;
+    latitude?: string | null;
+    longitude?: string | null;
+  }[];
+};
+
+export type CrawlPlacesResult = {
+  totalProcessed: number;
+  created: number;
+  updated: number;
+  osmCount: number;
+  curatedCount: number;
 };
 
 export type Impact = {
@@ -331,6 +370,7 @@ export type AdminUser = {
 export type AdminStats = {
   users: number;
   places: number;
+  sponsoredPlaces?: number;
   events: number;
   knowledgeChunks: number;
   runningRuns: number;

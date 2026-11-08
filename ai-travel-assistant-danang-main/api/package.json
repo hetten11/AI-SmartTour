@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --dns-result-order=ipv4first --watch src/index.ts",
-    "start": "node --dns-result-order=ipv4first src/index.ts"
+    "start": "node --dns-result-order=ipv4first src/index.ts",
+    "crawl:places": "node --dns-result-order=ipv4first --env-file=.env prisma/crawl-places.ts"
   },
   "keywords": [],
   "author": "",

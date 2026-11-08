@@ -44,6 +44,11 @@ itinerariesRouter.post("/itineraries/:id/activate", async (req, res) => {
   res.json({ itinerary });
 });
 
+itinerariesRouter.post("/itineraries/:id/estimate-costs", async (req, res) => {
+  const detail = await itineraries.estimateItineraryCosts(res.locals.user.id, req.params.id);
+  res.json(detail);
+});
+
 itinerariesRouter.delete("/itineraries/:id", async (req, res) => {
   await itineraries.deleteItinerary(res.locals.user.id, req.params.id);
   res.status(204).end();
@@ -62,6 +67,21 @@ itinerariesRouter.patch("/itineraries/:id/items/:itemId", async (req, res) => {
     req.body,
   );
   res.json({ item });
+});
+
+itinerariesRouter.delete("/itineraries/:id/items/:itemId", async (req, res) => {
+  await itineraries.deleteItem(res.locals.user.id, req.params.id, req.params.itemId);
+  res.status(204).end();
+});
+
+itinerariesRouter.post("/itineraries/:id/items/:itemId/move", async (req, res) => {
+  const itinerary = await itineraries.moveItem(
+    res.locals.user.id,
+    req.params.id,
+    req.params.itemId,
+    req.body,
+  );
+  res.json({ itinerary });
 });
 
 itinerariesRouter.post("/itineraries/:id/apply-impact/:impactId", async (req, res) => {

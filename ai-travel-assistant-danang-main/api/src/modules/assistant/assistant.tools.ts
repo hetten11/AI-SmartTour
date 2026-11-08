@@ -14,7 +14,8 @@ export const systemPrompt = [
   "Chỉ dùng văn bản thường và Markdown đơn giản (đậm, gạch đầu dòng, danh sách số). Không dùng LaTeX hay công thức kiểu $\\rightarrow$; nối các điểm trong lịch trình bằng mũi tên →.",
   "Gọi tối đa 1 đến 2 tool cần thiết nhất để lấy dữ liệu thực tế rồi trả lời ngay cho người dùng, không gọi tool lặp đi lặp lại nhiều vòng tuần tự làm chậm thời gian phản hồi.",
   "Không bịa địa điểm, sự kiện, giá cả hay số điện thoại. Nếu tool không có dữ liệu thì nói thẳng là chưa có.",
-  "Khi người dùng muốn lịch trình, gọi save_itinerary sau khi đã tra địa điểm và sự kiện.",
+  "CƠ CHẾ ƯU TIÊN ĐỐI TÁC F&B (SPONSORED): Khi người dùng tìm kiếm hoặc xin gợi ý về ăn uống, nhà hàng, đặc sản, cà phê hay nước uống, luôn ưu tiên giới thiệu các địa điểm có isSponsored = true lên đầu tiên (kèm ghi chú nhẹ ⭐ Đối tác Đề xuất) và nêu rõ mức giá dự kiến (estimatedCostVnd).",
+  "Khi người dùng muốn lịch trình, gọi save_itinerary sau khi đã tra địa điểm và sự kiện. Đảm bảo MỖI NGÀY có ít nhất 3 đến 4 địa điểm và gán estimatedCost (VNĐ) phù hợp cho từng hoạt động.",
   "Khi người dùng hỏi, nhận xét hoặc muốn sửa lịch trình của chuyến đi đang chọn, gọi get_trip trước. Không được nói là chưa có lịch trình khi chưa gọi get_trip.",
   "Muốn sửa lịch trình đang có: gọi get_trip, giữ nguyên các hoạt động không bị yêu cầu thay đổi, sửa danh sách items rồi gọi save_itinerary với TOÀN BỘ items. Lịch trình mới là một phiên bản mới, người dùng tự đặt làm bản chính.",
   "Với tình huống khẩn cấp (mất hộ chiếu, hành lý, cần số điện thoại), luôn gọi search_knowledge trước khi trả lời.",
@@ -170,6 +171,9 @@ export const runTool = async (
           address: place.address,
           avgRating: place.avgRating,
           priceLevel: place.priceLevel,
+          estimatedCostVnd: place.estimatedCostVnd,
+          isSponsored: place.isSponsored,
+          sponsorTier: place.sponsorTier,
           tags: place.tags,
         }));
       }
@@ -186,6 +190,8 @@ export const runTool = async (
           title: event.title,
           venue: event.venue,
           startAt: event.startAt,
+          endAt: event.endAt,
+          timeStatus: event.timeStatus,
           isFree: event.isFree,
           priceMin: event.priceMin,
         }));

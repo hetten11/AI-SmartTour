@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { AppError } from "../../common/http-error.ts";
 import type { DataSource } from "../../generated/prisma/client.ts";
+import { crawlDaNangWebEvents } from "./crawler.service.ts";
 
 export type NormalizedEvent = {
   externalId: string;
@@ -75,6 +76,14 @@ const readHttpSource = async (url: string): Promise<unknown> => {
 };
 
 export const fetchSourceEvents = async (source: DataSource): Promise<NormalizedEvent[]> => {
+  if (
+    source.sourceType === "danang_web" ||
+    source.url.startsWith("danang://") ||
+    source.url.includes("danangfantastiCity")
+  ) {
+    return crawlDaNangWebEvents(source.url);
+  }
+
   const payload =
     source.sourceType === "file" ? await readJsonSource(source.url) : await readHttpSource(source.url);
   const items = Array.isArray(payload)

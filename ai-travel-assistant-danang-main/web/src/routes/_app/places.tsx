@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import {
+  crawlPlaces,
   createPlace,
   deletePlace,
   districtsQueryOptions,
@@ -41,7 +42,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { errorMessage } from "@/lib/display";
+import { errorMessage, formatMoney } from "@/lib/display";
 import { toCoordinates } from "@/lib/geo";
 import type { Coordinates } from "@/lib/geo";
 
@@ -52,15 +53,15 @@ export const Route = createFileRoute("/_app/places")({
 const priceLabels = ["Miễn phí", "Rẻ", "Vừa phải", "Cao cấp"];
 
 const categories = [
-  { value: "", label: "Tất cả" },
-  { value: "beach", label: "Biển" },
-  { value: "attraction", label: "Tham quan" },
-  { value: "restaurant", label: "Nhà hàng" },
-  { value: "cafe", label: "Cà phê" },
-  { value: "market", label: "Chợ" },
-  { value: "museum", label: "Bảo tàng" },
-  { value: "temple", label: "Chùa" },
-  { value: "activity", label: "Hoạt động" },
+  { value: "", label: "Tất cả danh mục" },
+  { value: "restaurant", label: "🍽️ Nhà hàng & Ẩm thực (F&B)" },
+  { value: "cafe", label: "☕ Cà phê & Nước uống (F&B)" },
+  { value: "beach", label: "🏖️ Biển" },
+  { value: "attraction", label: "📸 Tham quan" },
+  { value: "activity", label: "🎡 Giải trí & Hoạt động" },
+  { value: "market", label: "🛍️ Chợ & Mua sắm" },
+  { value: "museum", label: "🏛️ Bảo tàng" },
+  { value: "temple", label: "⛩️ Chùa & Tâm linh" },
 ];
 
 const categoryOptions = categories.filter((item) => item.value !== "");
@@ -73,22 +74,34 @@ type PlaceForm = {
   address: string;
   description: string;
   priceLevel: string;
+  estimatedCostVnd: string;
   avgRating: string;
   tags: string;
   coordinates: Coordinates | null;
+  isSponsored: boolean;
+  sponsorTier: string;
+  sponsorPriority: string;
+  partnerName: string;
+  partnerContact: string;
 };
 
 const emptyPlace: PlaceForm = {
   id: null,
   name: "",
-  category: "attraction",
-  district: "",
+  category: "restaurant",
+  district: "Hải Châu",
   address: "",
   description: "",
-  priceLevel: "",
-  avgRating: "",
+  priceLevel: "2",
+  estimatedCostVnd: "150000",
+  avgRating: "4.7",
   tags: "",
   coordinates: null,
+  isSponsored: false,
+  sponsorTier: "gold",
+  sponsorPriority: "5",
+  partnerName: "",
+  partnerContact: "",
 };
 
 const asList = (value: string) =>
@@ -99,20 +112,54 @@ const asList = (value: string) =>
 
 const nullableNumber = (value: string) => (value.trim() === "" ? null : Number(value));
 
+const tierLabel: Record<string, string> = {
+  gold: "Đối tác Vàng",
+  silver: "Đối tác Bạc",
+  bronze: "Đối tác Đồng",
+};
+
 function PlacesPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState("");
   const [district, setDistrict] = useState("");
   const [category, setCategory] = useState("");
+  const [sponsoredOnly, setSponsoredOnly] = useState(false);
   const [page, setPage] = useState(0);
   const [form, setForm] = useState<PlaceForm | null>(null);
 
   const districts = useQuery(districtsQueryOptions);
-  const query = useQuery(placesQueryOptions({ q, district, category, page }));
+  const query = useQuery(
+    placesQueryOptions({
+      q,
+      district,
+      category,
+      sponsored: sponsoredOnly ? true : undefined,
+      page,
+    }),
+  );
   const me = useQuery(meQueryOptions);
   const isAdmin = me.data?.role === "admin";
 
   const totalPages = query.data ? Math.max(1, Math.ceil(query.data.total / query.data.pageSize)) : 1;
+
+  const crawl = useMutation({
+    mutationFn: () => crawlPlaces({ category: category || undefined, limit: 60, includeOsm: true }),
+    onSuccess: async (res) => {
+      await queryClient.invalidateQueries({ queryKey: ["places"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "stats"] });
+      toast.add({
+        type: "success",
+        title: "Đã cào dữ liệu địa điểm Đà Nẵng",
+        description: `Xử lý ${res.totalProcessed} địa điểm (${res.created} thêm mới, ${res.updated} cập nhật · OSM: ${res.osmCount})`,
+      });
+    },
+    onError: (err) =>
+      toast.add({
+        type: "error",
+        title: "Cào dữ liệu thất bại",
+        description: errorMessage(err),
+      }),
+  });
 
   const save = useMutation({
     mutationFn: (input: PlaceForm) => {
@@ -123,20 +170,27 @@ function PlacesPage() {
         address: input.address.trim() || null,
         description: input.description.trim() || null,
         priceLevel: nullableNumber(input.priceLevel),
+        estimatedCostVnd: nullableNumber(input.estimatedCostVnd),
         avgRating: nullableNumber(input.avgRating),
         tags: asList(input.tags),
         latitude: input.coordinates?.latitude ?? null,
         longitude: input.coordinates?.longitude ?? null,
+        isSponsored: input.isSponsored,
+        sponsorTier: input.isSponsored ? input.sponsorTier || "gold" : null,
+        sponsorPriority: input.isSponsored ? Number(input.sponsorPriority) || 5 : 0,
+        partnerName: input.isSponsored ? input.partnerName.trim() || null : null,
+        partnerContact: input.isSponsored ? input.partnerContact.trim() || null : null,
       };
       return input.id === null ? createPlace(payload) : updatePlace(input.id, payload);
     },
     onSuccess: async () => {
       setForm(null);
       await queryClient.invalidateQueries({ queryKey: ["places"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin", "stats"] });
+      toast.add({ type: "success", title: "Đã lưu thông tin địa điểm & đối tác" });
     },
   });
 
-  // Xoá cứng: knowledge chunk cascade, item lịch trình chuyển place_id về null.
   const remove = useMutation({
     mutationFn: (id: string) => deletePlace(id),
     onSuccess: async () => {
@@ -148,7 +202,6 @@ function PlacesPage() {
       toast.add({ type: "error", title: "Xoá địa điểm thất bại", description: errorMessage(error) }),
   });
 
-  // Xác nhận bằng toast có nút Xóa, thay cho confirm() của trình duyệt.
   const confirmDelete = (id: string, name: string) =>
     toast.add({
       type: "warning",
@@ -166,15 +219,32 @@ function PlacesPage() {
       address: place.address ?? "",
       description: place.description ?? "",
       priceLevel: place.priceLevel === null ? "" : String(place.priceLevel),
+      estimatedCostVnd:
+        place.estimatedCostVnd === null || place.estimatedCostVnd === undefined
+          ? ""
+          : String(place.estimatedCostVnd),
       avgRating: place.avgRating === null ? "" : String(place.avgRating),
       tags: place.tags.join(", "),
       coordinates: toCoordinates(place.latitude, place.longitude),
+      isSponsored: Boolean(place.isSponsored),
+      sponsorTier: place.sponsorTier ?? "gold",
+      sponsorPriority: String(place.sponsorPriority ?? 5),
+      partnerName: place.partnerName ?? "",
+      partnerContact: place.partnerContact ?? "",
     });
 
   const pins = (query.data?.places ?? []).flatMap((place) => {
     const coordinates = toCoordinates(place.latitude, place.longitude);
     return coordinates
-      ? [{ id: place.id, name: place.name, ...coordinates, note: place.category }]
+      ? [
+          {
+            id: place.id,
+            name: place.name,
+            ...coordinates,
+            isSponsored: place.isSponsored,
+            note: `${place.category}${place.estimatedCostVnd ? ` · ≈ ${formatMoney(place.estimatedCostVnd)}` : ""}`,
+          },
+        ]
       : [];
   });
 
@@ -187,21 +257,42 @@ function PlacesPage() {
     <div className="grid gap-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-xl font-medium">Địa điểm</h1>
+          <h1 className="text-xl font-medium">Địa điểm & Đối tác F&B Đà Nẵng</h1>
           <p className="text-muted-foreground text-sm">
-            Dữ liệu nền cho đề xuất và lịch trình của trợ lý AI.
+            Định vị thời gian thực, dữ liệu cào tự động và ưu tiên hiển thị Đối tác F&B (Sponsored).
           </p>
         </div>
         {isAdmin ? (
-          <Button onClick={() => setForm({ ...emptyPlace })}>Thêm địa điểm</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              disabled={crawl.isPending}
+              onClick={() => crawl.mutate()}
+            >
+              {crawl.isPending ? "Đang cào dữ liệu..." : "🕷️ Cào dữ liệu Địa điểm Đà Nẵng"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() =>
+                setForm({
+                  ...emptyPlace,
+                  category: "restaurant",
+                  isSponsored: true,
+                })
+              }
+            >
+              ⭐ Thêm Đối tác F&B
+            </Button>
+            <Button onClick={() => setForm({ ...emptyPlace })}>+ Thêm địa điểm</Button>
+          </div>
         ) : null}
       </div>
 
       <Card>
         <CardContent className="grid gap-3">
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid gap-2 sm:grid-cols-4">
             <Input
-              placeholder="Tìm theo tên, mô tả, địa chỉ"
+              placeholder="Tìm theo tên, món ăn, mô tả, địa chỉ..."
               value={q}
               onChange={(event) => {
                 setQ(event.target.value);
@@ -237,6 +328,18 @@ function PlacesPage() {
                 </option>
               ))}
             </select>
+            <Button
+              type="button"
+              variant={sponsoredOnly ? "default" : "outline"}
+              size="sm"
+              className="h-8"
+              onClick={() => {
+                setSponsoredOnly((prev) => !prev);
+                setPage(0);
+              }}
+            >
+              ⭐ {sponsoredOnly ? "Đang lọc Đối tác F&B" : "Chỉ xem Đối tác F&B"}
+            </Button>
           </div>
 
           {query.isPending ? (
@@ -245,14 +348,14 @@ function PlacesPage() {
             <p className="text-destructive text-sm">{errorMessage(query.error)}</p>
           ) : (
             <>
-              <MapView points={pins} height={260} />
+              <MapView points={pins} height={290} />
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Tên</TableHead>
+                    <TableHead>Tên địa điểm / Đối tác</TableHead>
                     <TableHead>Loại</TableHead>
                     <TableHead>Khu vực</TableHead>
-                    <TableHead>Giá</TableHead>
+                    <TableHead>Chi phí dự kiến</TableHead>
                     <TableHead>Đánh giá</TableHead>
                     <TableHead>Thẻ</TableHead>
                     {isAdmin ? <TableHead /> : null}
@@ -260,16 +363,45 @@ function PlacesPage() {
                 </TableHeader>
                 <TableBody>
                   {query.data.places.map((place) => (
-                    <TableRow key={place.id}>
+                    <TableRow
+                      key={place.id}
+                      className={place.isSponsored ? "bg-amber-500/5" : undefined}
+                    >
                       <TableCell>
-                        <div>{place.name}</div>
-                        <div className="text-muted-foreground text-xs">{place.address ?? "—"}</div>
+                        <div className="flex flex-wrap items-center gap-1.5 font-medium">
+                          <span>{place.name}</span>
+                          {place.isSponsored ? (
+                            <Badge className="bg-amber-500 text-white hover:bg-amber-600">
+                              ⭐ {tierLabel[place.sponsorTier ?? "gold"] ?? "Đối tác F&B"}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <div className="text-muted-foreground text-xs">
+                          {place.address ?? "—"}
+                          {place.isSponsored && place.partnerName
+                            ? ` · Hợp đồng: ${place.partnerName}`
+                            : ""}
+                        </div>
                       </TableCell>
-                      <TableCell>{place.category}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{place.category}</Badge>
+                      </TableCell>
                       <TableCell>{place.district ?? "—"}</TableCell>
-                      <TableCell>{priceLabels[place.priceLevel ?? 0] ?? "—"}</TableCell>
-                      <TableCell>{place.avgRating ?? "—"}</TableCell>
-                      <TableCell className="max-w-40">
+                      <TableCell>
+                        {place.estimatedCostVnd !== null && place.estimatedCostVnd !== undefined ? (
+                          place.estimatedCostVnd === 0 ? (
+                            <Badge variant="secondary">Miễn phí</Badge>
+                          ) : (
+                            <span className="text-sm font-medium">
+                              {formatMoney(place.estimatedCostVnd)}/người
+                            </span>
+                          )
+                        ) : (
+                          priceLabels[place.priceLevel ?? 0] ?? "—"
+                        )}
+                      </TableCell>
+                      <TableCell>{place.avgRating ? `⭐ ${place.avgRating}` : "—"}</TableCell>
+                      <TableCell className="max-w-44">
                         <div className="flex flex-wrap gap-1">
                           {place.tags.slice(0, 3).map((tag) => (
                             <Badge key={tag} variant="secondary">
@@ -280,11 +412,7 @@ function PlacesPage() {
                       </TableCell>
                       {isAdmin ? (
                         <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => openEdit(place)}
-                          >
+                          <Button variant="ghost" size="sm" onClick={() => openEdit(place)}>
                             Sửa
                           </Button>
                         </TableCell>
@@ -324,16 +452,15 @@ function PlacesPage() {
       <Dialog open={form !== null} onOpenChange={(open) => (open ? null : setForm(null))}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>{form?.id ? "Sửa địa điểm" : "Thêm địa điểm"}</DialogTitle>
+            <DialogTitle>{form?.id ? "Sửa địa điểm / Đối tác F&B" : "Thêm địa điểm / Đối tác F&B"}</DialogTitle>
             <DialogDescription>
-              Bấm lên bản đồ để lấy toạ độ, hoặc nhập tay. Nhớ chạy lại chỉ mục RAG sau khi lưu để
-              trợ lý AI thấy dữ liệu mới.
+              Cấu hình thông tin địa điểm, chi phí dự kiến để AI tính ngân sách và gói hợp đồng Đối tác F&B (Sponsored).
             </DialogDescription>
           </DialogHeader>
           {form ? (
             <div className="grid gap-3">
               <div className="grid gap-1.5">
-                <Label htmlFor="place-name">Tên</Label>
+                <Label htmlFor="place-name">Tên địa điểm / Quán F&B</Label>
                 <Input
                   id="place-name"
                   value={form.name}
@@ -392,7 +519,7 @@ function PlacesPage() {
                 <Label htmlFor="place-description">Mô tả</Label>
                 <textarea
                   id="place-description"
-                  rows={3}
+                  rows={2}
                   className="border-input w-full rounded-lg border bg-transparent px-2 py-1.5 text-sm"
                   value={form.description}
                   onChange={(event) => setForm({ ...form, description: event.target.value })}
@@ -400,7 +527,19 @@ function PlacesPage() {
               </div>
               <div className="grid gap-1.5 sm:grid-cols-3">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="place-price">Mức giá 0-3</Label>
+                  <Label htmlFor="place-cost-vnd">Giá dự kiến (VNĐ/người)</Label>
+                  <Input
+                    id="place-cost-vnd"
+                    type="number"
+                    min={0}
+                    step={10000}
+                    placeholder="VD: 150000"
+                    value={form.estimatedCostVnd}
+                    onChange={(event) => setForm({ ...form, estimatedCostVnd: event.target.value })}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="place-price">Mức giá (0-3)</Label>
                   <Input
                     id="place-price"
                     type="number"
@@ -411,7 +550,7 @@ function PlacesPage() {
                   />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="place-rating">Đánh giá 0-5</Label>
+                  <Label htmlFor="place-rating">Đánh giá (0-5)</Label>
                   <Input
                     id="place-rating"
                     type="number"
@@ -422,15 +561,75 @@ function PlacesPage() {
                     onChange={(event) => setForm({ ...form, avgRating: event.target.value })}
                   />
                 </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="place-tags">Thẻ (cách nhau phẩy)</Label>
-                  <Input
-                    id="place-tags"
-                    value={form.tags}
-                    onChange={(event) => setForm({ ...form, tags: event.target.value })}
-                  />
-                </div>
               </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="place-tags">Thẻ (cách nhau dấu phẩy)</Label>
+                <Input
+                  id="place-tags"
+                  value={form.tags}
+                  onChange={(event) => setForm({ ...form, tags: event.target.value })}
+                />
+              </div>
+
+              {/* Khối Hợp đồng Đối tác F&B Bên thứ 3 (Sponsored / Featured Listing) */}
+              <div className="grid gap-2.5 rounded-xl border border-amber-500/40 bg-amber-500/5 p-3">
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    checked={form.isSponsored}
+                    onChange={(event) => setForm({ ...form, isSponsored: event.target.checked })}
+                  />
+                  <span>⭐ Kích hoạt Hợp đồng Đối tác F&B (Ưu tiên hiển thị đầu danh sách & AI gợi ý)</span>
+                </label>
+
+                {form.isSponsored ? (
+                  <div className="grid gap-2.5 sm:grid-cols-2">
+                    <div className="grid gap-1">
+                      <Label htmlFor="sponsor-tier">Hạng gói tài trợ</Label>
+                      <select
+                        id="sponsor-tier"
+                        className="border-input h-8 rounded-lg border bg-background px-2 text-sm"
+                        value={form.sponsorTier}
+                        onChange={(e) => setForm({ ...form, sponsorTier: e.target.value })}
+                      >
+                        <option value="gold">Hạng Vàng (Gold Partner)</option>
+                        <option value="silver">Hạng Bạc (Silver Partner)</option>
+                        <option value="bronze">Hạng Đồng (Bronze Partner)</option>
+                      </select>
+                    </div>
+                    <div className="grid gap-1">
+                      <Label htmlFor="sponsor-priority">Điểm ưu tiên (1 - 10)</Label>
+                      <Input
+                        id="sponsor-priority"
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={form.sponsorPriority}
+                        onChange={(e) => setForm({ ...form, sponsorPriority: e.target.value })}
+                      />
+                    </div>
+                    <div className="grid gap-1">
+                      <Label htmlFor="partner-name">Tên đơn vị / Đối tác ký HĐ</Label>
+                      <Input
+                        id="partner-name"
+                        placeholder="VD: Công ty TNHH Ẩm thực..."
+                        value={form.partnerName}
+                        onChange={(e) => setForm({ ...form, partnerName: e.target.value })}
+                      />
+                    </div>
+                    <div className="grid gap-1">
+                      <Label htmlFor="partner-contact">SĐT / Email hợp đồng</Label>
+                      <Input
+                        id="partner-contact"
+                        placeholder="0905 xxx xxx · email@..."
+                        value={form.partnerContact}
+                        onChange={(e) => setForm({ ...form, partnerContact: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
               <div className="grid gap-1.5">
                 <Label>Toạ độ</Label>
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -475,8 +674,10 @@ function PlacesPage() {
                       ? [{ id: "draft", name: form.name || "Vị trí mới", ...form.coordinates }]
                       : []
                   }
-                  onPick={(latitude, longitude) => setForm({ ...form, coordinates: { latitude, longitude } })}
-                  height={220}
+                  onPick={(latitude, longitude) =>
+                    setForm({ ...form, coordinates: { latitude, longitude } })
+                  }
+                  height={200}
                 />
               </div>
               {save.error ? (
@@ -493,7 +694,6 @@ function PlacesPage() {
                 onClick={() => {
                   const id = form?.id;
                   if (!id) return;
-                  // Đóng dialog ngay, việc xoá chờ bấm nút trong toast.
                   confirmDelete(id, form?.name ?? "");
                   setForm(null);
                 }}

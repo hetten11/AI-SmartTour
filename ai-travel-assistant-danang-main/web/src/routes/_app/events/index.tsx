@@ -52,7 +52,6 @@ const asList = (value: string) =>
 
 const nullableNumber = (value: string) => (value.trim() === "" ? null : Number(value));
 
-// <input type="datetime-local"> dùng giờ địa phương, không phải ISO UTC.
 const toLocalInput = (iso: string | null) => {
   if (!iso) return "";
   const date = new Date(iso);
@@ -92,23 +91,43 @@ const emptyEvent: EventForm = {
   coordinates: null,
 };
 
+const renderTimeStatusBadge = (status?: "ongoing" | "upcoming" | "ended") => {
+  if (status === "ongoing") {
+    return (
+      <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
+        🟢 Đang diễn ra
+      </Badge>
+    );
+  }
+  if (status === "ended") {
+    return <Badge variant="outline">⚪ Đã kết thúc</Badge>;
+  }
+  return (
+    <Badge variant="secondary" className="border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300">
+      🔵 Sắp diễn ra
+    </Badge>
+  );
+};
+
 function EventsPage() {
   const queryClient = useQueryClient();
   const [q, setQ] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [hideEnded, setHideEnded] = useState(false);
   const [page, setPage] = useState(0);
   const [form, setForm] = useState<EventForm | null>(null);
 
-  const hasFilters = Boolean(q || from || to);
+  const hasFilters = Boolean(q || from || to || hideEnded);
   const clearFilters = () => {
     setQ("");
     setFrom("");
     setTo("");
+    setHideEnded(false);
     setPage(0);
   };
 
-  const query = useQuery(eventsQueryOptions({ q, from, to, page }));
+  const query = useQuery(eventsQueryOptions({ q, from, to, hideEnded, page }));
   const me = useQuery(meQueryOptions);
   const isAdmin = me.data?.role === "admin";
   const totalPages = query.data
@@ -117,13 +136,19 @@ function EventsPage() {
 
   const save = useMutation({
     mutationFn: (input: EventForm) => {
+      const startIso = new Date(input.startAt).toISOString();
+      const endIso =
+        input.endAt === ""
+          ? new Date(new Date(input.startAt).getTime() + 2 * 60 * 60 * 1000).toISOString()
+          : new Date(input.endAt).toISOString();
+
       const payload: EventInput = {
         title: input.title.trim(),
         venue: input.venue.trim() || null,
         address: input.address.trim() || null,
         description: input.description.trim() || null,
-        startAt: new Date(input.startAt).toISOString(),
-        endAt: input.endAt === "" ? null : new Date(input.endAt).toISOString(),
+        startAt: startIso,
+        endAt: endIso,
         isFree: input.isFree,
         priceMin: nullableNumber(input.priceMin),
         priceMax: nullableNumber(input.priceMax),
@@ -137,10 +162,10 @@ function EventsPage() {
     onSuccess: async () => {
       setForm(null);
       await queryClient.invalidateQueries({ queryKey: ["events"] });
+      toast.add({ type: "success", title: "Đã lưu sự kiện" });
     },
   });
 
-  // Xoá cứng: dọn notification, impact và phiên bản trước (EventVersion chặn xoá).
   const remove = useMutation({
     mutationFn: (id: string) => deleteEvent(id),
     onSuccess: async () => {
@@ -152,7 +177,6 @@ function EventsPage() {
       toast.add({ type: "error", title: "Xoá sự kiện thất bại", description: errorMessage(error) }),
   });
 
-  // Xác nhận bằng toast có nút Xóa, thay cho confirm() của trình duyệt.
   const confirmDelete = (id: string, title: string) =>
     toast.add({
       type: "warning",
@@ -189,20 +213,20 @@ function EventsPage() {
     <div className="grid gap-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-xl font-medium">Sự kiện</h1>
+          <h1 className="text-xl font-medium">Sự kiện & Lễ hội Đà Nẵng</h1>
           <p className="text-muted-foreground text-sm">
-            Dữ liệu do Data Sync nhập về hoặc admin nhập tay, mỗi lần đổi lưu thành một phiên bản.
+            Tự động cào sự kiện Web Đà Nẵng lúc 0h00 mỗi ngày. Sự kiện đang/sắp diễn ra được ưu tiên lên đầu, sự kiện đã kết thúc tự động trôi xuống dưới.
           </p>
         </div>
-        {isAdmin ? <Button onClick={() => setForm({ ...emptyEvent })}>Thêm sự kiện</Button> : null}
+        {isAdmin ? <Button onClick={() => setForm({ ...emptyEvent })}>+ Thêm sự kiện</Button> : null}
       </div>
 
       <Card>
         <CardHeader>
           <div className="grid gap-1">
-            <CardTitle>Tìm kiếm và lọc</CardTitle>
+            <CardTitle>Tìm kiếm & Ưu tiên hiển thị</CardTitle>
             <CardDescription>
-              Tìm sự kiện theo từ khóa hoặc khoảng ngày diễn ra.
+              Lọc sự kiện theo từ khóa, khoảng thời gian hoặc ẩn các sự kiện đã kết thúc.
             </CardDescription>
           </div>
           {hasFilters ? (
@@ -216,7 +240,7 @@ function EventsPage() {
         </CardHeader>
 
         <CardContent className="grid gap-4">
-          <FieldGroup className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <FieldGroup className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <Field className="gap-1.5 sm:col-span-2">
               <FieldLabel htmlFor="event-search">Từ khóa</FieldLabel>
               <div className="relative">
@@ -228,7 +252,7 @@ function EventsPage() {
                   id="event-search"
                   type="search"
                   className="pl-9"
-                  placeholder="Tên, mô tả hoặc địa điểm"
+                  placeholder="Tên, mô tả hoặc địa điểm tổ chức"
                   value={q}
                   onChange={(event) => {
                     setQ(event.target.value);
@@ -261,6 +285,21 @@ function EventsPage() {
                 }}
               />
             </Field>
+            <Field className="gap-1.5">
+              <FieldLabel>Luồng hiển thị</FieldLabel>
+              <Button
+                type="button"
+                variant={hideEnded ? "default" : "outline"}
+                size="sm"
+                className="h-8 w-full"
+                onClick={() => {
+                  setHideEnded((prev) => !prev);
+                  setPage(0);
+                }}
+              >
+                {hideEnded ? "Đang ẩn sự kiện đã kết thúc" : "Ẩn sự kiện đã kết thúc"}
+              </Button>
+            </Field>
           </FieldGroup>
 
           {query.isPending ? (
@@ -281,50 +320,63 @@ function EventsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead>Trạng thái</TableHead>
                     <TableHead>Sự kiện</TableHead>
-                    <TableHead>Bắt đầu</TableHead>
+                    <TableHead>Thời gian Bắt đầu</TableHead>
+                    <TableHead>Thời gian Kết thúc</TableHead>
                     <TableHead>Địa điểm</TableHead>
-                    <TableHead>Giá</TableHead>
-                    <TableHead>Phiên bản</TableHead>
+                    <TableHead>Giá vé</TableHead>
                     {isAdmin ? <TableHead /> : null}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {query.data.events.map((event) => (
-                    <TableRow key={event.id}>
-                      <TableCell>
-                        <Link
-                          className="underline-offset-4 hover:underline"
-                          to="/events/$eventId"
-                          params={{ eventId: event.id }}
-                        >
-                          {event.title}
-                        </Link>
-                      </TableCell>
-                      <TableCell>{formatDateTime(event.startAt)}</TableCell>
-                      <TableCell>{event.venue ?? "—"}</TableCell>
-                      <TableCell>
-                        {event.isFree ? (
-                          <Badge variant="secondary">Miễn phí</Badge>
-                        ) : (
-                          <span className="text-sm">
-                            {event.priceMin
-                              ? Number(event.priceMin).toLocaleString("vi-VN")
-                              : "—"}{" "}
-                            đ
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell>v{event.currentVersion}</TableCell>
-                      {isAdmin ? (
-                        <TableCell className="text-right">
-                          <Button variant="ghost" size="sm" onClick={() => openEdit(event)}>
-                            Sửa
-                          </Button>
+                  {query.data.events.map((event) => {
+                    const isEnded = event.timeStatus === "ended";
+                    return (
+                      <TableRow
+                        key={event.id}
+                        className={isEnded ? "opacity-60" : event.timeStatus === "ongoing" ? "bg-emerald-500/5" : undefined}
+                      >
+                        <TableCell>{renderTimeStatusBadge(event.timeStatus)}</TableCell>
+                        <TableCell>
+                          <Link
+                            className="font-medium underline-offset-4 hover:underline"
+                            to="/events/$eventId"
+                            params={{ eventId: event.id }}
+                          >
+                            {event.title}
+                          </Link>
+                          <div className="text-muted-foreground text-xs">
+                            v{event.currentVersion}
+                          </div>
                         </TableCell>
-                      ) : null}
-                    </TableRow>
-                  ))}
+                        <TableCell className="text-sm">{formatDateTime(event.startAt)}</TableCell>
+                        <TableCell className="text-sm">
+                          {event.endAt ? formatDateTime(event.endAt) : "Trong ngày"}
+                        </TableCell>
+                        <TableCell>{event.venue ?? "—"}</TableCell>
+                        <TableCell>
+                          {event.isFree ? (
+                            <Badge variant="secondary">Miễn phí</Badge>
+                          ) : (
+                            <span className="text-sm">
+                              {event.priceMin
+                                ? Number(event.priceMin).toLocaleString("vi-VN")
+                                : "—"}{" "}
+                              đ
+                            </span>
+                          )}
+                        </TableCell>
+                        {isAdmin ? (
+                          <TableCell className="text-right">
+                            <Button variant="ghost" size="sm" onClick={() => openEdit(event)}>
+                              Sửa
+                            </Button>
+                          </TableCell>
+                        ) : null}
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
               <div className="flex items-center justify-between text-sm">
@@ -368,8 +420,7 @@ function EventsPage() {
           <DialogHeader>
             <DialogTitle>{form?.id ? "Sửa sự kiện" : "Thêm sự kiện"}</DialogTitle>
             <DialogDescription>
-              Sự kiện nhập tay vẫn ghi phiên bản mới và phát thông báo cho itinerary đang dùng nó.
-              Bấm lên bản đồ để lấy toạ độ.
+              Cập nhật đầy đủ thời gian Bắt đầu & Kết thúc để hệ thống tự động ưu tiên hiển thị và cảnh báo cho lịch trình.
             </DialogDescription>
           </DialogHeader>
           {form ? (
@@ -400,7 +451,7 @@ function EventsPage() {
               </div>
               <div className="grid gap-1.5 sm:grid-cols-2">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="event-start">Bắt đầu</Label>
+                  <Label htmlFor="event-start">Thời gian Bắt đầu</Label>
                   <Input
                     id="event-start"
                     type="datetime-local"
@@ -409,7 +460,7 @@ function EventsPage() {
                   />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="event-end">Kết thúc (bỏ trống nếu không rõ)</Label>
+                  <Label htmlFor="event-end">Thời gian Kết thúc</Label>
                   <Input
                     id="event-end"
                     type="datetime-local"
@@ -484,7 +535,7 @@ function EventsPage() {
                       : []
                   }
                   onPick={(latitude, longitude) => setForm({ ...form, coordinates: { latitude, longitude } })}
-                  height={220}
+                  height={200}
                 />
               </div>
               {save.error ? (
@@ -501,7 +552,6 @@ function EventsPage() {
                 onClick={() => {
                   const id = form?.id;
                   if (!id) return;
-                  // Đóng dialog ngay, việc xoá chờ bấm nút trong toast.
                   confirmDelete(id, form?.title ?? "");
                   setForm(null);
                 }}

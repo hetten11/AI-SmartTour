@@ -21,7 +21,7 @@ export const userPatchSchema = z
 
 export const sourceSchema = z.object({
   name: z.string().trim().min(1, "Tên nguồn không được để trống").max(150),
-  sourceType: z.enum(["file", "api"]),
+  sourceType: z.enum(["file", "api", "danang_web"]),
   url: z.string().trim().max(2000).optional(),
   // Nội dung file JSON do trình duyệt đọc và gửi lên, không dùng multipart.
   content: z.string().min(2, "File rỗng").max(5_000_000).optional(),
@@ -39,6 +39,16 @@ const dateField = (label: string) =>
     .transform((value) => new Date(value))
     .refine((date) => !Number.isNaN(date.getTime()), `${label} không hợp lệ`);
 
+const optionalDateField = z
+  .string()
+  .trim()
+  .nullish()
+  .transform((value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  });
+
 const latitude = z.number().min(-90, "Vĩ độ ngoài khoảng -90..90").max(90, "Vĩ độ ngoài khoảng -90..90");
 const longitude = z
   .number()
@@ -54,8 +64,16 @@ export const placeSchema = z.object({
   latitude: latitude.nullish(),
   longitude: longitude.nullish(),
   priceLevel: z.number().int().min(0, "Mức giá 0..4").max(4, "Mức giá 0..4").nullish(),
+  estimatedCostVnd: z.number().int().min(0).max(100_000_000).nullish(),
   avgRating: z.number().min(0, "Đánh giá 0..5").max(5, "Đánh giá 0..5").nullish(),
   tags: z.array(z.string().trim().min(1).max(50)).max(20, "Tối đa 20 thẻ").optional(),
+  isSponsored: z.boolean().optional(),
+  sponsorTier: z.string().trim().max(30).nullish(),
+  sponsorPriority: z.number().int().min(0).max(100).optional(),
+  partnerName: z.string().trim().max(150).nullish(),
+  partnerContact: z.string().trim().max(150).nullish(),
+  contractStartAt: optionalDateField,
+  contractEndAt: optionalDateField,
   isActive: z.boolean().optional(),
 });
 
@@ -180,6 +198,8 @@ export const createSource = async (body: unknown) => {
   if (input.sourceType === "file") {
     if (input.content) url = await saveUpload(input.content);
     if (!url) throw new AppError(400, "Nguồn loại file cần file JSON");
+  } else if (input.sourceType === "danang_web") {
+    url = url || `https://danangfantastiCity.com/events-crawler-${randomUUID().slice(0, 6)}`;
   } else if (!url) {
     throw new AppError(400, "Nguồn loại api cần URL");
   }
@@ -365,14 +385,24 @@ export const deleteEvent = async (eventId: unknown) => {
 };
 
 export const stats = async () => {
-  const [users, places, events, knowledgeChunks, runningRuns, notifications] = await Promise.all([
-    prisma.user.count(),
-    prisma.place.count({ where: { isActive: true } }),
-    prisma.event.count({ where: { isActive: true } }),
-    prisma.knowledgeChunk.count(),
-    prisma.syncRun.count({ where: { status: "running" } }),
-    prisma.notification.count({ where: { isRead: false } }),
-  ]);
+  const [users, places, sponsoredPlaces, events, knowledgeChunks, runningRuns, notifications] =
+    await Promise.all([
+      prisma.user.count(),
+      prisma.place.count({ where: { isActive: true } }),
+      prisma.place.count({ where: { isActive: true, isSponsored: true } }),
+      prisma.event.count({ where: { isActive: true } }),
+      prisma.knowledgeChunk.count(),
+      prisma.syncRun.count({ where: { status: "running" } }),
+      prisma.notification.count({ where: { isRead: false } }),
+    ]);
 
-  return { users, places, events, knowledgeChunks, runningRuns, unreadNotifications: notifications };
+  return {
+    users,
+    places,
+    sponsoredPlaces,
+    events,
+    knowledgeChunks,
+    runningRuns,
+    unreadNotifications: notifications,
+  };
 };
