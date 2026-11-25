@@ -2,7 +2,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import {
-  crawlPlaces,
   createPlace,
   deletePlace,
   districtsQueryOptions,
@@ -142,25 +141,6 @@ function PlacesPage() {
 
   const totalPages = query.data ? Math.max(1, Math.ceil(query.data.total / query.data.pageSize)) : 1;
 
-  const crawl = useMutation({
-    mutationFn: () => crawlPlaces({ category: category || undefined, limit: 60, includeOsm: true }),
-    onSuccess: async (res) => {
-      await queryClient.invalidateQueries({ queryKey: ["places"] });
-      await queryClient.invalidateQueries({ queryKey: ["admin", "stats"] });
-      toast.add({
-        type: "success",
-        title: "Đã cào dữ liệu địa điểm Đà Nẵng",
-        description: `Xử lý ${res.totalProcessed} địa điểm (${res.created} thêm mới, ${res.updated} cập nhật · OSM: ${res.osmCount})`,
-      });
-    },
-    onError: (err) =>
-      toast.add({
-        type: "error",
-        title: "Cào dữ liệu thất bại",
-        description: errorMessage(err),
-      }),
-  });
-
   const save = useMutation({
     mutationFn: (input: PlaceForm) => {
       const payload: PlaceInput = {
@@ -264,13 +244,6 @@ function PlacesPage() {
         </div>
         {isAdmin ? (
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              disabled={crawl.isPending}
-              onClick={() => crawl.mutate()}
-            >
-              {crawl.isPending ? "Đang cào dữ liệu..." : "🕷️ Cào dữ liệu Địa điểm Đà Nẵng"}
-            </Button>
             <Button
               variant="outline"
               onClick={() =>

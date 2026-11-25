@@ -416,7 +416,7 @@ export function MapView({
   }, [points, routeEnabled]);
 
   return (
-    <div className="relative w-full">
+    <div className="relative isolate z-0 w-full">
       <div
         ref={box}
         style={{ height }}
@@ -427,7 +427,7 @@ export function MapView({
       />
 
       {/* Thanh công cụ định vị thời gian thực & nối tuyến đường bộ trên bản đồ */}
-      <div className="pointer-events-auto absolute right-2.5 top-2.5 z-[400] flex flex-wrap items-center gap-1.5">
+      <div className="pointer-events-auto absolute right-2.5 top-2.5 z-10 flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           onClick={() => {

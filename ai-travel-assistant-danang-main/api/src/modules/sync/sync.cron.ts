@@ -48,8 +48,7 @@ export const startSyncCron = async () => {
     console.warn("[sync] không thể kiểm tra nguồn mặc định:", err);
   });
 
-  // Khởi tạo & cập nhật dữ liệu địa điểm (bao gồm thông tin ngày thành lập, lịch sử, kiến trúc & khu vực sáp nhập)
-  // rồi cập nhật lại chỉ mục RAG knowledge_chunks để AI Chatbot tra cứu được ngay
+  // Khởi tạo & cập nhật dữ liệu địa điểm ngay khi bật server
   void crawlDaNangPlaces({ includeOsm: false })
     .then((res) => {
       if (res.created > 0 || res.updated > 0) {
@@ -58,6 +57,27 @@ export const startSyncCron = async () => {
       return null;
     })
     .catch(() => {});
+
+  // Tự động cào địa điểm Đà Nẵng (bao gồm OpenStreetMap Overpass API + Danh mục chuẩn)
+  // vào khung giờ cố định 00:00 mỗi ngày ("0 0 * * *") hoàn toàn tự động dưới nền.
+  tasks.push(
+    schedule("0 0 * * *", () => {
+      console.log('[sync] ⏰ Bắt đầu tự động cào Địa điểm Đà Nẵng & OpenStreetMap (0 0 * * *)');
+      void crawlDaNangPlaces({ limit: 60, includeOsm: true })
+        .then((res) => {
+          console.log(
+            `[sync] ✅ Đã cào tự động ${res.totalProcessed} địa điểm (Thêm mới: ${res.created}, Cập nhật: ${res.updated})`,
+          );
+          if (res.created > 0 || res.updated > 0) {
+            return reindexAll();
+          }
+          return null;
+        })
+        .catch((error: unknown) => {
+          console.error("[sync] Lỗi tự động cào địa điểm 0h00:", error);
+        });
+    }),
+  );
 
   const sources = await prisma.dataSource.findMany({ where: { isActive: true } });
 

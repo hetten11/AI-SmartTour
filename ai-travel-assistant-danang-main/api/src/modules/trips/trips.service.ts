@@ -97,15 +97,22 @@ export const createTrip = async (userId: string, body: unknown) => {
 
 export const updateTrip = async (userId: string, tripId: unknown, body: unknown) => {
   const id = await findTripId(userId, tripId);
+  const current = await prisma.trip.findUniqueOrThrow({ where: { id } });
   const input = parseInput(updateSchema, body);
+
+  const nextStart = input.startDate !== undefined ? toDate(input.startDate) : current.startDate;
+  const nextEnd = input.endDate !== undefined ? toDate(input.endDate) : current.endDate;
+  if (nextEnd < nextStart) {
+    throw new AppError(400, "Ngày kết thúc phải bằng hoặc sau ngày bắt đầu");
+  }
 
   const data: Prisma.TripUpdateInput = {};
   if (input.title !== undefined) data.title = input.title ?? null;
   if (input.notes !== undefined) data.notes = input.notes ?? null;
   if (input.adults !== undefined) data.adults = input.adults;
   if (input.children !== undefined) data.children = input.children;
-  if (input.startDate !== undefined) data.startDate = toDate(input.startDate);
-  if (input.endDate !== undefined) data.endDate = toDate(input.endDate);
+  if (input.startDate !== undefined) data.startDate = nextStart;
+  if (input.endDate !== undefined) data.endDate = nextEnd;
 
   if (input.companions !== undefined) {
     await prisma.tripCompanion.deleteMany({ where: { tripId: id } });
@@ -114,11 +121,44 @@ export const updateTrip = async (userId: string, tripId: unknown, body: unknown)
     });
   }
 
-  return prisma.trip.update({
+  const updatedTrip = await prisma.trip.update({
     where: { id },
     data,
     include: { companions: true },
   });
+
+  // Nếu người dùng rút ngắn số ngày chuyến đi (ví dụ từ 10 ngày xuống 5 ngày),
+  // tự động cắt gọn các hoạt động vượt quá số ngày mới (dayNumber > newDays)
+  // trong các lịch trình của chuyến đi và tính lại tổng chi phí.
+  const newDays = Math.max(
+    1,
+    Math.min(
+      30,
+      Math.round((nextEnd.getTime() - nextStart.getTime()) / (24 * 60 * 60 * 1000)) + 1,
+    ),
+  );
+  const tripItineraries = await prisma.itinerary.findMany({
+    where: { tripId: id },
+    select: { id: true },
+  });
+  for (const itin of tripItineraries) {
+    const deleted = await prisma.itineraryItem.deleteMany({
+      where: { itineraryId: itin.id, dayNumber: { gt: newDays } },
+    });
+    if (deleted.count > 0) {
+      const remaining = await prisma.itineraryItem.findMany({
+        where: { itineraryId: itin.id },
+        select: { estimatedCost: true },
+      });
+      const newTotal = remaining.reduce((sum, item) => sum + Number(item.estimatedCost ?? 0), 0);
+      await prisma.itinerary.update({
+        where: { id: itin.id },
+        data: { totalEstimatedCost: newTotal },
+      });
+    }
+  }
+
+  return updatedTrip;
 };
 
 export const deleteTrip = async (userId: string, tripId: unknown) => {
