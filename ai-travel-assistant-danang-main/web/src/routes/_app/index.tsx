@@ -16,6 +16,7 @@ import {
   eventsQueryOptions,
   impactsQueryOptions,
   itineraryQueryOptions,
+  placesQueryOptions,
   profileQueryOptions,
   tripQueryOptions,
   tripsQueryOptions,
@@ -110,7 +111,10 @@ function DashboardPage() {
   const impacts = useQuery({ ...impactsQueryOptions(focusId), enabled: focusId !== "" });
   const weather = useQuery(weatherQueryOptions);
   const profile = useQuery(profileQueryOptions);
-  const events = useQuery(eventsQueryOptions({ from: today, to: addDays(today, 14), page: 0 }));
+  const events = useQuery(
+    eventsQueryOptions({ from: today, to: addDays(today, 14), hideEnded: true, page: 0 }),
+  );
+  const sponsoredPlaces = useQuery(placesQueryOptions({ sponsored: true, take: 6 }));
 
   const openImpacts = (impacts.data ?? []).filter((impact) => !impact.isResolved);
   const current = weather.data?.current;
@@ -392,6 +396,88 @@ function DashboardPage() {
         </Card>
       </div>
 
+      {/* Kệ Đối tác Ẩm thực & Cà phê Đề xuất (B2B Sponsored F&B) */}
+      <Card className="border-amber-500/30 bg-amber-500/5">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <span>⭐ Đối tác Ẩm thực & Cà phê Nổi bật (Sponsored F&B)</span>
+              </CardTitle>
+              <CardDescription>
+                Các nhà hàng đặc sản và quán cà phê đối tác chính thức tại Đà Nẵng được ưu tiên đề xuất với mức giá minh bạch.
+              </CardDescription>
+            </div>
+            <Button variant="outline" size="sm" render={<Link to="/places" />}>
+              Khám phá tất cả địa điểm
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {sponsoredPlaces.isPending ? (
+            <Skeleton className="h-28 w-full" />
+          ) : (sponsoredPlaces.data?.places ?? []).length === 0 ? (
+            <p className="text-muted-foreground text-sm">
+              Chưa có đối tác F&B nào được kích hoạt.
+            </p>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {(sponsoredPlaces.data?.places ?? []).slice(0, 4).map((place) => {
+                const navUrl =
+                  place.latitude && place.longitude
+                    ? `https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}&travelmode=driving`
+                    : null;
+                return (
+                  <div
+                    key={place.id}
+                    className="bg-background flex flex-col justify-between gap-2 rounded-xl border border-amber-500/30 p-3.5 shadow-xs"
+                  >
+                    <div className="grid gap-1">
+                      <div className="flex items-center justify-between gap-1">
+                        <Badge className="bg-amber-500 text-white hover:bg-amber-600">
+                          ⭐ {place.sponsorTier === "silver" ? "Đối tác Bạc" : "Đối tác Vàng"}
+                        </Badge>
+                        {place.avgRating ? (
+                          <span className="text-xs font-semibold text-amber-600">
+                            ★ {place.avgRating}
+                          </span>
+                        ) : null}
+                      </div>
+                      <h3 className="mt-1 font-medium leading-snug">{place.name}</h3>
+                      <p className="text-muted-foreground text-xs">
+                        📍 {place.address ?? place.district ?? "Đà Nẵng"}
+                      </p>
+                      {place.description ? (
+                        <p className="text-muted-foreground line-clamp-2 text-xs">
+                          {place.description}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 flex items-center justify-between border-t pt-2 text-xs">
+                      <span className="font-semibold text-emerald-600">
+                        {place.estimatedCostVnd
+                          ? `≈ ${formatMoney(place.estimatedCostVnd)}/người`
+                          : "Giá hợp lý"}
+                      </span>
+                      {navUrl ? (
+                        <a
+                          href={navUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium text-blue-600 hover:underline"
+                        >
+                          🧭 Chỉ đường
+                        </a>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -435,15 +521,34 @@ function DashboardPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Trạng thái</TableHead>
                   <TableHead>Sự kiện</TableHead>
                   <TableHead>Địa điểm</TableHead>
-                  <TableHead>Bắt đầu</TableHead>
+                  <TableHead>Thời gian Bắt đầu</TableHead>
+                  <TableHead>Thời gian Kết thúc</TableHead>
                   <TableHead>Giá</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {upcoming.slice(0, 5).map((event) => (
-                  <TableRow key={event.id}>
+                {upcoming.slice(0, 6).map((event) => (
+                  <TableRow
+                    key={event.id}
+                    className={event.timeStatus === "ongoing" ? "bg-emerald-500/5" : undefined}
+                  >
+                    <TableCell>
+                      {event.timeStatus === "ongoing" ? (
+                        <Badge className="bg-emerald-600 text-white hover:bg-emerald-700">
+                          🟢 Đang diễn ra
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="secondary"
+                          className="border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300"
+                        >
+                          🔵 Sắp diễn ra
+                        </Badge>
+                      )}
+                    </TableCell>
                     <TableCell className="max-w-72 whitespace-normal">
                       <Link
                         to="/events/$eventId"
@@ -454,7 +559,10 @@ function DashboardPage() {
                       </Link>
                     </TableCell>
                     <TableCell className="text-muted-foreground">{event.venue ?? "—"}</TableCell>
-                    <TableCell>{formatDateTime(event.startAt)}</TableCell>
+                    <TableCell className="text-xs">{formatDateTime(event.startAt)}</TableCell>
+                    <TableCell className="text-xs">
+                      {event.endAt ? formatDateTime(event.endAt) : "Trong ngày"}
+                    </TableCell>
                     <TableCell>
                       {event.isFree ? (
                         <Badge variant="secondary">Miễn phí</Badge>

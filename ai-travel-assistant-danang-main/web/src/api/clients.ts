@@ -475,6 +475,7 @@ export const addItineraryItem = (
     itemType?: string;
     placeId?: string | null;
     eventId?: string | null;
+    customAddress?: string | null;
     startTime?: string | null;
     endTime?: string | null;
     estimatedCost?: number | null;

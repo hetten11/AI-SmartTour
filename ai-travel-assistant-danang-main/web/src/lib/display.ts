@@ -1,17 +1,28 @@
 export const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : "Có lỗi xảy ra, thử lại";
 
-const dateTimeFormat = new Intl.DateTimeFormat("vi-VN", {
-  dateStyle: "short",
-  timeStyle: "short",
-});
-const dateFormat = new Intl.DateTimeFormat("vi-VN", { dateStyle: "short" });
+const toDdMmYy = (date: Date): string => {
+  const dd = String(date.getDate()).padStart(2, "0");
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const yy = String(date.getFullYear()).slice(-2);
+  return `${dd}/${mm}/${yy}`;
+};
 
-export const formatDateTime = (value: string | null | undefined): string =>
-  value ? dateTimeFormat.format(new Date(value)) : "—";
+export const formatDateTime = (value: string | null | undefined): string => {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mi} ${toDdMmYy(d)}`;
+};
 
-export const formatDate = (value: string | null | undefined): string =>
-  value ? dateFormat.format(new Date(value)) : "—";
+export const formatDate = (value: string | null | undefined): string => {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return toDdMmYy(d);
+};
 
 export const formatMoney = (value: string | number | null | undefined): string => {
   if (value === null || value === undefined || value === "") return "—";

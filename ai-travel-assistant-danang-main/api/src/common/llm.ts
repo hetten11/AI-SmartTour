@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import dns from "node:dns";
 dns.setDefaultResultOrder("ipv4first");
 import { env } from "../config/env.ts";
@@ -37,35 +38,100 @@ type GeminiResponse = {
   embedding?: { values?: number[] };
 };
 
+const FALLBACK_CHAT_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+];
+
+// Bộ nhớ tạm ngắn hạn (60 giây): nếu GEMINI_API_KEY bị lỗi xác thực (400/401/403)
+// hoặc không kết nối được, bỏ qua ngay trong 60s tiếp theo để Chatbot và Lịch trình
+// phản hồi tức thì (< 300ms) bằng dữ liệu PostgreSQL mà không bắt người dùng chờ timeout.
+let geminiUnavailableUntil = 0;
+
 // Gemini API gốc (không qua lớp tương thích OpenAI), khoá gửi ở header
-// x-goog-api-key.
-const post = async <T>(path: string, body: unknown, retries = 2): Promise<T> => {
+// x-goog-api-key. Có gắn AbortSignal.timeout(8000) và tự động fallback model
+// nếu tên model cấu hình trong .env không tồn tại (404).
+const post = async <T>(path: string, body: unknown, retries = 0): Promise<T> => {
   if (!env.geminiApiKey) throw new AppError(503, "Chưa cấu hình GEMINI_API_KEY");
-
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
-    const response = await fetch(`${env.geminiBaseUrl}/${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": env.geminiApiKey,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (response.ok) {
-      return (await response.json()) as T;
-    }
-
-    if ((response.status === 503 || response.status === 429) && attempt < retries) {
-      await new Promise((r) => setTimeout(r, 1200));
-      continue;
-    }
-
-    const detail = (await response.text()).slice(0, 300);
-    throw new AppError(502, `Lỗi gọi Gemini (${response.status}): ${detail}`);
+  // Khóa Gemini API hợp lệ của Google AI Studio luôn bắt đầu bằng "AIza".
+  // Nếu cấu hình key không đúng định dạng (ví dụ bắt đầu bằng "AQ..."), ngắt ngay trong 0ms
+  // để chuyển thẳng sang bộ trả lời thông minh từ PostgreSQL mà không bị treo chờ mạng.
+  if (!env.geminiApiKey.startsWith("AIza")) {
+    throw new AppError(503, "GEMINI_API_KEY chưa đúng định dạng chuẩn Google AI Studio (AIza...)");
+  }
+  if (Date.now() < geminiUnavailableUntil) {
+    throw new AppError(503, "Gemini API đang tạm ngắt nhanh (circuit breaker)");
   }
 
-  throw new AppError(502, "Lỗi gọi Gemini: quá số lần thử lại");
+  const isChatCall = path.endsWith(":generateContent");
+  const candidatePaths = isChatCall
+    ? [
+        path,
+        ...FALLBACK_CHAT_MODELS.map((m) => `models/${m}:generateContent`).filter((p) => p !== path),
+      ]
+    : [path];
+
+  let lastError: AppError | null = null;
+
+  for (const currentPath of candidatePaths) {
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      let response: Response;
+      try {
+        response = await fetch(`${env.geminiBaseUrl}/${currentPath}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": env.geminiApiKey,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(8_000),
+        });
+      } catch (err) {
+        geminiUnavailableUntil = Date.now() + 30_000;
+        throw new AppError(
+          504,
+          `Kết nối Gemini quá thời gian chờ (Timeout 8s): ${(err as Error).message}`,
+        );
+      }
+
+      if (response.ok) {
+        geminiUnavailableUntil = 0;
+        return (await response.json()) as T;
+      }
+
+      if ((response.status === 503 || response.status === 429) && attempt < retries) {
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+
+      const detail = (await response.text()).slice(0, 300);
+      lastError = new AppError(502, `Lỗi gọi Gemini (${response.status}): ${detail}`);
+
+      // Nếu sai API Key (401/403 hoặc 400 API_KEY_INVALID), ngắt ngay lập tức trong 60s, không thử model khác
+      if (
+        response.status === 401 ||
+        response.status === 403 ||
+        (response.status === 400 && detail.includes("API_KEY_INVALID"))
+      ) {
+        geminiUnavailableUntil = Date.now() + 60_000;
+        throw lastError;
+      }
+
+      // Chỉ thử sang model dự phòng khi gặp 404 (sai tên model)
+      if (isChatCall && response.status === 404) {
+        break;
+      }
+
+      // Nếu hết quota (429) hoặc 503, tạm ngắt 30s để các request sau phản hồi tức thì
+      if (response.status === 429 || response.status === 503) {
+        geminiUnavailableUntil = Date.now() + 30_000;
+      }
+      throw lastError;
+    }
+  }
+
+  throw lastError ?? new AppError(502, "Lỗi gọi Gemini: quá số lần thử lại");
 };
 
 const parseJson = (raw: string): unknown => {
@@ -123,10 +189,22 @@ const toContents = (messages: ChatMessagePayload[]) => {
 
     const name = message.tool_call_id ? callNames.get(message.tool_call_id) : undefined;
     if (!name) continue;
-    contents.push({
-      role: "user",
-      parts: [{ functionResponse: { name, response: asFunctionResponse(message.content) } }],
-    });
+    const fnPart: GeminiPart = {
+      functionResponse: { name, response: asFunctionResponse(message.content) },
+    };
+    const lastContent = contents[contents.length - 1];
+    if (
+      lastContent &&
+      lastContent.role === "user" &&
+      lastContent.parts.every((part) => part.functionResponse !== undefined)
+    ) {
+      lastContent.parts.push(fnPart);
+    } else {
+      contents.push({
+        role: "user",
+        parts: [fnPart],
+      });
+    }
   }
 
   return { system, contents };
@@ -175,7 +253,7 @@ export const chat = async (
   const toolCalls: ChatToolCall[] = parts
     .filter((part) => part.functionCall?.name)
     .map((part, index) => ({
-      id: `call_${index}_${part.functionCall?.name ?? "tool"}`,
+      id: `call_${index}_${randomUUID().slice(0, 8)}_${part.functionCall?.name ?? "tool"}`,
       type: "function",
       function: {
         name: part.functionCall?.name ?? "",

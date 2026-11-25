@@ -12,7 +12,7 @@ export const env = {
   geminiBaseUrl: (
     process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta"
   ).replace(/\/$/, ""),
-  geminiModel: process.env.GEMINI_MODEL ?? "gemini-3.8-flash",
+  geminiModel: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
   geminiEmbeddingModel: process.env.GEMINI_EMBEDDING_MODEL ?? "gemini-embedding-001",
   // Phải khớp cột knowledge_chunks.embedding (vector(1536) trong migration init).
   embeddingDim: Number(process.env.EMBEDDING_DIM ?? 1536),

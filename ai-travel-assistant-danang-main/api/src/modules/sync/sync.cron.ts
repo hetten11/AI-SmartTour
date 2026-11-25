@@ -1,5 +1,6 @@
 import { schedule, validate } from "node-cron";
 import { prisma } from "../../config/prisma.ts";
+import { reindexAll } from "../knowledge/knowledge.service.ts";
 import { crawlDaNangPlaces } from "./crawler.service.ts";
 import { runSource } from "./sync.service.ts";
 
@@ -9,7 +10,7 @@ const DEFAULT_WEB_SOURCE_URL = "https://danangfantastiCity.com/events-crawler";
 
 // Đảm bảo luôn có nguồn cào sự kiện Web Đà Nẵng chạy tự động vào 0h00 mỗi ngày (0 0 * * *)
 export const ensureDefaultDailyEventSource = async () => {
-  const existing = await prisma.dataSource.findFirst({
+  let source = await prisma.dataSource.findFirst({
     where: {
       OR: [
         { url: DEFAULT_WEB_SOURCE_URL },
@@ -18,8 +19,8 @@ export const ensureDefaultDailyEventSource = async () => {
     },
   });
 
-  if (!existing) {
-    const created = await prisma.dataSource.create({
+  if (!source) {
+    source = await prisma.dataSource.create({
       data: {
         name: "Cổng Sự kiện Du lịch Đà Nẵng (Tự động 0h00)",
         url: DEFAULT_WEB_SOURCE_URL,
@@ -28,16 +29,16 @@ export const ensureDefaultDailyEventSource = async () => {
         isActive: true,
       },
     });
-    // Chạy đồng bộ khởi tạo lần đầu nếu chưa có dữ liệu từ nguồn này
-    void runSource(created.id).catch((err: unknown) => {
-      console.warn("[sync] khởi tạo nguồn sự kiện Đà Nẵng:", err);
-    });
-  } else if (existing.cronExpression !== "0 0 * * *") {
-    await prisma.dataSource.update({
-      where: { id: existing.id },
+  } else if (source.cronExpression !== "0 0 * * *") {
+    source = await prisma.dataSource.update({
+      where: { id: source.id },
       data: { cronExpression: "0 0 * * *" },
     });
   }
+
+  await runSource(source.id).catch((err: unknown) => {
+    console.warn("[sync] đồng bộ nguồn sự kiện Đà Nẵng:", err);
+  });
 };
 
 export const startSyncCron = async () => {
@@ -47,8 +48,16 @@ export const startSyncCron = async () => {
     console.warn("[sync] không thể kiểm tra nguồn mặc định:", err);
   });
 
-  // Khởi tạo dữ liệu địa điểm & đối tác F&B mẫu nếu hệ thống chưa cào lần nào
-  void crawlDaNangPlaces({ includeOsm: false }).catch(() => {});
+  // Khởi tạo dữ liệu địa điểm & đối tác F&B mẫu (bao gồm cả khu vực Quảng Nam sáp nhập vào TP. Đà Nẵng mới)
+  // rồi cập nhật lại chỉ mục RAG knowledge_chunks để AI Chatbot tra cứu được ngay
+  void crawlDaNangPlaces({ includeOsm: false })
+    .then((res) => {
+      if (res.created > 0) {
+        return reindexAll();
+      }
+      return null;
+    })
+    .catch(() => {});
 
   const sources = await prisma.dataSource.findMany({ where: { isActive: true } });
 

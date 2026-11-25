@@ -31,7 +31,7 @@ const slugify = (text: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 180);
 
-// Tự động suy luận Quận/Huyện tại Đà Nẵng từ toạ độ GPS hoặc địa chỉ
+// Tự động suy luận Quận/Huyện tại TP. Đà Nẵng (bao gồm khu vực Quảng Nam sáp nhập vào Đà Nẵng) từ toạ độ GPS hoặc địa chỉ
 export const inferDaNangDistrict = (lat: number, lon: number, rawDistrict?: string | null): string => {
   if (rawDistrict) {
     const clean = rawDistrict.trim();
@@ -42,8 +42,17 @@ export const inferDaNangDistrict = (lat: number, lon: number, rawDistrict?: stri
     if (clean.includes("Liên Chiểu") || clean.toLowerCase().includes("lien chieu")) return "Liên Chiểu";
     if (clean.includes("Cẩm Lệ") || clean.toLowerCase().includes("cam le")) return "Cẩm Lệ";
     if (clean.includes("Hòa Vang") || clean.toLowerCase().includes("hoa vang")) return "Hòa Vang";
+    if (clean.includes("Hội An") || clean.toLowerCase().includes("hoi an")) return "Hội An";
+    if (clean.includes("Duy Xuyên") || clean.toLowerCase().includes("duy xuyen")) return "Duy Xuyên";
+    if (clean.includes("Điện Bàn") || clean.toLowerCase().includes("dien ban")) return "Điện Bàn";
+    if (clean.includes("Tam Kỳ") || clean.toLowerCase().includes("tam ky")) return "Tam Kỳ";
+    if (clean.includes("Thăng Bình") || clean.toLowerCase().includes("thang binh")) return "Thăng Bình";
   }
 
+  if (lat < 15.65) return "Tam Kỳ";
+  if (lat < 15.83 && lon < 108.22) return "Duy Xuyên";
+  if (lat < 15.96 && lon >= 108.28) return "Hội An";
+  if (lat < 15.96 && lon >= 108.18) return "Điện Bàn";
   if (lon < 108.14) return "Hòa Vang";
   if (lat > 16.08 && lon < 108.18) return "Liên Chiểu";
   if (lon >= 108.225 && lat >= 16.05) return "Sơn Trà";
@@ -384,6 +393,143 @@ const CURATED_DANANG_PLACES: CrawledPlaceInput[] = [
     avgRating: 4.8,
     tags: ["công viên nước", "trong nhà", "onsen", "gia đình"],
   },
+  // Các địa danh nổi tiếng thuộc khu vực Quảng Nam sáp nhập vào TP. Đà Nẵng mới
+  {
+    name: "Khu đền tháp Mỹ Sơn (Di sản Văn hóa Thế giới)",
+    slug: "thanh-dia-my-son-da-nang",
+    category: "attraction",
+    description: "Quần thể hơn 70 đền tháp Chăm Pa cổ kính nằm trong thung lũng Duy Phú (khu vực Duy Xuyên thuộc TP. Đà Nẵng mở rộng sau sáp nhập Quảng Nam). Du khách được chiêm ngưỡng kiến trúc gạch nung kỳ bí, xem múa Chăm Apsara dưới chân tháp cổ và khám phá Bảo tàng Mỹ Sơn.",
+    address: "Xã Duy Phú, Khu vực Duy Xuyên, TP. Đà Nẵng",
+    district: "Duy Xuyên",
+    latitude: 15.7644,
+    longitude: 108.1242,
+    priceLevel: 2,
+    estimatedCostVnd: 150000,
+    avgRating: 4.9,
+    tags: ["mỹ sơn", "thánh địa mỹ sơn", "di sản thế giới", "chăm pa", "văn hóa", "lịch sử", "duy xuyên"],
+  },
+  {
+    name: "Phố cổ Hội An (Di sản Văn hóa Thế giới)",
+    slug: "pho-co-hoi-an-da-nang",
+    category: "attraction",
+    description: "Thương cảng cổ sầm uất bên dòng sông Hoài với Chùa Cầu, những dãy nhà cổ tường vàng rêu phong, phố đèn lồng lung linh về đêm và trải nghiệm thả hoa đăng (khu vực Hội An thuộc TP. Đà Nẵng mở rộng).",
+    address: "Phường Minh An, Khu vực Hội An, TP. Đà Nẵng",
+    district: "Hội An",
+    latitude: 15.8794,
+    longitude: 108.3280,
+    priceLevel: 1,
+    estimatedCostVnd: 120000,
+    avgRating: 4.9,
+    tags: ["hội an", "phố cổ hội an", "di sản thế giới", "chùa cầu", "đèn lồng", "buổi tối"],
+  },
+  {
+    name: "Rừng Dừa Bảy Mẫu Cẩm Thanh",
+    slug: "rung-dua-bay-mau-cam-thanh",
+    category: "activity",
+    description: "Khu du lịch sinh thái rừng dừa nước đặc trưng miền sông nước với trải nghiệm chèo thuyền thúng, xem múa thúng, quăng chài và thưởng thức ẩm thực dân dã.",
+    address: "Xã Cẩm Thanh, Khu vực Hội An, TP. Đà Nẵng",
+    district: "Hội An",
+    latitude: 15.8748,
+    longitude: 108.3685,
+    priceLevel: 2,
+    estimatedCostVnd: 150000,
+    avgRating: 4.8,
+    tags: ["rừng dừa", "cẩm thanh", "thuyền thúng", "sinh thái", "hội an"],
+  },
+  {
+    name: "Đảo Cù Lao Chàm (Khu dự trữ sinh quyển thế giới)",
+    slug: "dao-cu-lao-cham-da-nang",
+    category: "beach",
+    description: "Cụm đảo hoang sơ nổi tiếng với hoạt động đi cano cao tốc, lặn ngắm san hô, tắm biển Bãi Ông, Bãi Chồng và thưởng thức cua đá, ốc vú nàng.",
+    address: "Xã đảo Tân Hiệp, Khu vực Hội An, TP. Đà Nẵng",
+    district: "Hội An",
+    latitude: 15.9542,
+    longitude: 108.5094,
+    priceLevel: 3,
+    estimatedCostVnd: 550000,
+    avgRating: 4.8,
+    tags: ["cù lao chàm", "biển đảo", "lặn san hô", "hải sản", "hội an"],
+  },
+  {
+    name: "Làng Gốm Thanh Hà",
+    slug: "lang-gom-thanh-ha-da-nang",
+    category: "attraction",
+    description: "Làng nghề gốm truyền thống hơn 500 năm tuổi bên sông Thu Bồn cùng Công viên Đất Nung Thanh Hà lớn nhất Việt Nam, nơi du khách tự tay chuốt gốm.",
+    address: "Phạm Phán, Phường Thanh Hà, Khu vực Hội An, TP. Đà Nẵng",
+    district: "Hội An",
+    latitude: 15.8781,
+    longitude: 108.3036,
+    priceLevel: 1,
+    estimatedCostVnd: 50000,
+    avgRating: 4.7,
+    tags: ["làng gốm", "thanh hà", "làng nghề", "văn hóa", "hội an"],
+  },
+  {
+    name: "Bãi biển An Bàng",
+    slug: "bai-bien-an-bang-da-nang",
+    category: "beach",
+    description: "Bãi biển yên bình lọt top 50 bãi biển đẹp nhất thế giới với làn nước trong xanh, bờ cát rộng và chuỗi nhà hàng, quán bar ven biển phóng khoáng.",
+    address: "Đường Hai Bà Trưng, Phường Cẩm An, Khu vực Hội An, TP. Đà Nẵng",
+    district: "Hội An",
+    latitude: 15.9136,
+    longitude: 108.3408,
+    priceLevel: 0,
+    estimatedCostVnd: 0,
+    avgRating: 4.8,
+    tags: ["biển an bàng", "biển", "nghỉ dưỡng", "hội an"],
+  },
+  {
+    name: "VinWonders Nam Hội An",
+    slug: "vinwonders-nam-hoi-an-da-nang",
+    category: "activity",
+    description: "Tổ hợp vui chơi giải trí, River Safari du khảo động vật hoang dã trên sông, Đảo Văn hóa Dân gian và thế giới nước quy mô lớn.",
+    address: "Đường Võ Chí Công, Bình Minh, Khu vực Thăng Bình, TP. Đà Nẵng",
+    district: "Thăng Bình",
+    latitude: 15.7745,
+    longitude: 108.4042,
+    priceLevel: 3,
+    estimatedCostVnd: 600000,
+    avgRating: 4.8,
+    tags: ["vinwonders", "nam hội an", "giải trí", "safari", "gia đình"],
+  },
+  {
+    name: "Cơm Gà Bà Buội Hội An - Đặc sản Xứ Quảng (Đối tác F&B)",
+    slug: "com-ga-ba-buoi-hoi-an",
+    category: "restaurant",
+    description: "Quán cơm gà ta xé phay gia truyền nổi tiếng bậc nhất khu phố cổ Hội An với hạt cơm nấu nước luộc gà vàng ươm và gỏi gà rau răm đậm vị.",
+    address: "22 Phan Chu Trinh, Phường Minh An, Khu vực Hội An, TP. Đà Nẵng",
+    district: "Hội An",
+    latitude: 15.8789,
+    longitude: 108.3292,
+    priceLevel: 1,
+    estimatedCostVnd: 75000,
+    avgRating: 4.8,
+    tags: ["cơm gà", "đặc sản", "hội an", "nhà hàng", "f&b", "sponsored"],
+    isSponsored: true,
+    sponsorTier: "silver",
+    sponsorPriority: 7,
+    partnerName: "Cơm Gà Bà Buội Hội An",
+    partnerContact: "0905 767 999 · comgababuoi@gmail.com",
+  },
+  {
+    name: "Bê Thui Cầu Mống Mười - Đặc sản Điện Bàn (Đối tác F&B)",
+    slug: "be-thui-cau-mong-dien-ban",
+    category: "restaurant",
+    description: "Đặc sản bê thui Cầu Mống trứ danh vùng Điện Bàn (TP. Đà Nẵng mở rộng) với thịt bê thui rơm hai tầng chín tái mềm ngọt chấm mắm cái cá cơm.",
+    address: "Quốc lộ 1A, Cầu Mống, Điện Phương, Khu vực Điện Bàn, TP. Đà Nẵng",
+    district: "Điện Bàn",
+    latitude: 15.8592,
+    longitude: 108.2485,
+    priceLevel: 2,
+    estimatedCostVnd: 160000,
+    avgRating: 4.8,
+    tags: ["bê thui", "cầu mống", "điện bàn", "đặc sản", "nhà hàng", "f&b", "sponsored"],
+    isSponsored: true,
+    sponsorTier: "silver",
+    sponsorPriority: 6,
+    partnerName: "Nhà hàng Bê Thui Cầu Mống Mười",
+    partnerContact: "0905 112 233 · bethuicaumong@gmail.com",
+  },
 ];
 
 // Ánh xạ tag từ OpenStreetMap sang category chuẩn của hệ thống
@@ -657,8 +803,8 @@ export const crawlDaNangWebEvents = async (targetUrl?: string): Promise<Normaliz
       address: "Đường Võ Nguyên Giáp, Quận Sơn Trà, Đà Nẵng",
       latitude: 16.0695,
       longitude: 108.2458,
-      startAt: isoAt(new Date(todayStart.getTime() + 1 * 24 * 60 * 60 * 1000), 16, 30),
-      endAt: isoAt(new Date(todayStart.getTime() + 5 * 24 * 60 * 60 * 1000), 22, 30),
+      startAt: isoAt(new Date(todayStart.getTime() - 1 * 24 * 60 * 60 * 1000), 8, 30),
+      endAt: isoAt(new Date(todayStart.getTime() + 6 * 24 * 60 * 60 * 1000), 22, 30),
       isFree: true,
       priceMin: 0,
       priceMax: 250000,
@@ -674,13 +820,47 @@ export const crawlDaNangWebEvents = async (targetUrl?: string): Promise<Normaliz
       address: "1A Trần Phú, Quận Hải Châu, Đà Nẵng",
       latitude: 16.0772,
       longitude: 108.2232,
-      startAt: isoAt(todayStart, 17, 0),
-      endAt: isoAt(new Date(todayStart.getTime() + 14 * 24 * 60 * 60 * 1000), 20, 30),
+      startAt: isoAt(new Date(todayStart.getTime() - 2 * 24 * 60 * 60 * 1000), 9, 0),
+      endAt: isoAt(new Date(todayStart.getTime() + 12 * 24 * 60 * 60 * 1000), 21, 30),
       isFree: false,
       priceMin: 300000,
       priceMax: 450000,
       ticketUrl: "https://aodaishow.com",
       tags: ["nghệ thuật", "văn hóa", "trong nhà", "buổi tối"],
+    },
+    {
+      externalId: `danang-hoian-lantern-festival-${year}-${String(month + 1).padStart(2, "0")}`,
+      title: "Đêm hội Đèn lồng & Thả Hoa đăng Sông Hoài - Phố cổ Hội An (TP. Đà Nẵng mới)",
+      description:
+        "Không gian phố cổ Hội An (thuộc TP. Đà Nẵng sau sáp nhập Quảng Nam) tắt đèn điện, thắp sáng hàng ngàn chiếc đèn lồng truyền thống, biểu diễn Bài Chòi và thả hoa đăng trên dòng sông Hoài.",
+      venue: "Phố cổ Hội An & Bờ sông Hoài",
+      address: "Phường Minh An, Khu vực Hội An, TP. Đà Nẵng",
+      latitude: 15.8775,
+      longitude: 108.3264,
+      startAt: isoAt(todayStart, 17, 30),
+      endAt: isoAt(new Date(todayStart.getTime() + 14 * 24 * 60 * 60 * 1000), 22, 0),
+      isFree: true,
+      priceMin: 0,
+      priceMax: 120000,
+      ticketUrl: null,
+      tags: ["hội an", "đèn lồng", "hoa đăng", "văn hóa", "buổi tối"],
+    },
+    {
+      externalId: `danang-myson-cham-dance-${year}-${String(month + 1).padStart(2, "0")}`,
+      title: "Biểu diễn Nghệ thuật Múa Chăm Apsara tại Khu đền tháp Mỹ Sơn (TP. Đà Nẵng mới)",
+      description:
+        "Trình diễn nghệ thuật múa Chăm Pa cổ truyền và hòa tấu trống Paranưng, kèn Saranai ngay dưới chân tháp cổ Mỹ Sơn (Khu vực Duy Xuyên, TP. Đà Nẵng mới).",
+      venue: "Khu đền tháp Mỹ Sơn (Tháp B-C-D & Nhà biểu diễn)",
+      address: "Xã Duy Phú, Khu vực Duy Xuyên, TP. Đà Nẵng",
+      latitude: 15.7644,
+      longitude: 108.1242,
+      startAt: isoAt(todayStart, 9, 15),
+      endAt: isoAt(new Date(todayStart.getTime() + 20 * 24 * 60 * 60 * 1000), 16, 0),
+      isFree: false,
+      priceMin: 150000,
+      priceMax: 150000,
+      ticketUrl: null,
+      tags: ["mỹ sơn", "múa chăm", "di sản thế giới", "văn hóa", "duy xuyên"],
     },
     {
       externalId: `danang-past-marathon-${year}`,

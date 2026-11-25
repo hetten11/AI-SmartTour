@@ -1,7 +1,7 @@
 import type { ChatTool } from "../../common/llm.ts";
 import { AppError } from "../../common/http-error.ts";
 import { getWeather, getWeatherRange } from "../../common/weather.ts";
-import { listEventsInRange } from "../events/events.service.ts";
+import { describeEventSchedule, listEventsInRange } from "../events/events.service.ts";
 import { savePlan, getItinerary } from "../itineraries/itineraries.service.ts";
 import { planSchema } from "../itineraries/itineraries.schema.ts";
 import { searchKnowledge } from "../knowledge/knowledge.service.ts";
@@ -10,11 +10,12 @@ import { getProfile } from "../profiles/profiles.service.ts";
 import { getTrip } from "../trips/trips.service.ts";
 
 export const systemPrompt = [
-  "Bạn là trợ lý du lịch Đà Nẵng, trả lời bằng tiếng Việt, ngắn gọn, súc tích và thực tế.",
+  "Bạn là trợ lý du lịch Đà Nẵng (bao gồm toàn bộ địa giới TP. Đà Nẵng mới sau khi sáp nhập với tỉnh Quảng Nam như Hội An, Khu đền tháp Mỹ Sơn - Duy Xuyên, Điện Bàn, Cù Lao Chàm, Rừng dừa Bảy Mẫu, VinWonders Nam Hội An, Tam Kỳ), trả lời bằng tiếng Việt, ngắn gọn, súc tích và thực tế.",
   "Chỉ dùng văn bản thường và Markdown đơn giản (đậm, gạch đầu dòng, danh sách số). Không dùng LaTeX hay công thức kiểu $\\rightarrow$; nối các điểm trong lịch trình bằng mũi tên →.",
   "Gọi tối đa 1 đến 2 tool cần thiết nhất để lấy dữ liệu thực tế rồi trả lời ngay cho người dùng, không gọi tool lặp đi lặp lại nhiều vòng tuần tự làm chậm thời gian phản hồi.",
   "Không bịa địa điểm, sự kiện, giá cả hay số điện thoại. Nếu tool không có dữ liệu thì nói thẳng là chưa có.",
   "CƠ CHẾ ƯU TIÊN ĐỐI TÁC F&B (SPONSORED): Khi người dùng tìm kiếm hoặc xin gợi ý về ăn uống, nhà hàng, đặc sản, cà phê hay nước uống, luôn ưu tiên giới thiệu các địa điểm có isSponsored = true lên đầu tiên (kèm ghi chú nhẹ ⭐ Đối tác Đề xuất) và nêu rõ mức giá dự kiến (estimatedCostVnd).",
+  "Khi trả lời về sự kiện hoặc lễ hội, LUÔN nêu rõ: trạng thái (Đang diễn ra hay Sắp diễn ra), thời gian cụ thể theo định dạng dd/mm/yy (Từ HH:mm dd/mm/yy đến HH:mm dd/mm/yy), tổng thời lượng diễn ra trong bao lâu và còn bao lâu nữa kết thúc (hoặc còn bao lâu nữa bắt đầu).",
   "Khi người dùng muốn lịch trình, gọi save_itinerary sau khi đã tra địa điểm và sự kiện. Đảm bảo MỖI NGÀY có ít nhất 3 đến 4 địa điểm và gán estimatedCost (VNĐ) phù hợp cho từng hoạt động.",
   "Khi người dùng hỏi, nhận xét hoặc muốn sửa lịch trình của chuyến đi đang chọn, gọi get_trip trước. Không được nói là chưa có lịch trình khi chưa gọi get_trip.",
   "Muốn sửa lịch trình đang có: gọi get_trip, giữ nguyên các hoạt động không bị yêu cầu thay đổi, sửa danh sách items rồi gọi save_itinerary với TOÀN BỘ items. Lịch trình mới là một phiên bản mới, người dùng tự đặt làm bản chính.",
@@ -185,16 +186,24 @@ export const runTool = async (
           new Date(`${from}T00:00:00.000Z`),
           new Date(`${to}T23:59:59.999Z`),
         );
-        return events.map((event) => ({
-          id: event.id,
-          title: event.title,
-          venue: event.venue,
-          startAt: event.startAt,
-          endAt: event.endAt,
-          timeStatus: event.timeStatus,
-          isFree: event.isFree,
-          priceMin: event.priceMin,
-        }));
+        return events.map((event) => {
+          const schedule = describeEventSchedule(event);
+          return {
+            id: event.id,
+            title: event.title,
+            venue: event.venue,
+            address: event.address,
+            startAt: event.startAt,
+            endAt: event.endAt,
+            timeStatus: event.timeStatus,
+            timeRangeText: schedule.timeRangeText,
+            durationText: schedule.durationText,
+            statusDetailText: schedule.statusDetailText,
+            fullScheduleText: schedule.fullScheduleText,
+            isFree: event.isFree,
+            priceMin: event.priceMin,
+          };
+        });
       }
 
       case "get_weather": {

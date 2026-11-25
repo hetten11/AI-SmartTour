@@ -66,7 +66,7 @@ export function NotificationBell() {
       <PopoverContent
         align="end"
         sideOffset={8}
-        className="w-[22rem] max-w-[calc(100vw-2rem)] gap-0 p-0"
+        className="w-[26rem] max-w-[calc(100vw-2rem)] gap-0 p-0"
       >
         <div className="flex items-center justify-between gap-2 border-b p-3">
           <span className="text-sm font-medium">Thông báo</span>
@@ -129,11 +129,25 @@ export function NotificationBell() {
                 </>
               );
 
+              const liveEventId = notification.id.startsWith("event-live-")
+                ? notification.id.replace("event-live-", "")
+                : null;
+
               return notification.tripId ? (
                 <Link
                   key={notification.id}
                   to="/trips/$tripId"
                   params={{ tripId: notification.tripId }}
+                  className={itemClass}
+                  onClick={close}
+                >
+                  {inner}
+                </Link>
+              ) : liveEventId ? (
+                <Link
+                  key={notification.id}
+                  to="/events/$eventId"
+                  params={{ eventId: liveEventId }}
                   className={itemClass}
                   onClick={close}
                 >

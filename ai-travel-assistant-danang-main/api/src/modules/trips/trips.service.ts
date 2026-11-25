@@ -17,9 +17,13 @@ const companionsSchema = z
   .max(20);
 
 const baseFields = {
-  title: z.string().trim().max(150).nullish(),
-  startDate: z.string().regex(datePattern, "Ngày bắt đầu phải theo dạng YYYY-MM-DD"),
-  endDate: z.string().regex(datePattern, "Ngày kết thúc phải theo dạng YYYY-MM-DD"),
+  title: z
+    .string({ error: "Vui lòng nhập tên chuyến đi trước khi tạo" })
+    .trim()
+    .min(1, "Vui lòng nhập tên chuyến đi trước khi tạo")
+    .max(150, "Tên chuyến đi tối đa 150 ký tự"),
+  startDate: z.string().regex(datePattern, "Vui lòng chọn ngày bắt đầu hợp lệ"),
+  endDate: z.string().regex(datePattern, "Vui lòng chọn ngày kết thúc hợp lệ"),
   adults: z.coerce.number().int().min(1).max(20).default(1),
   children: z.coerce.number().int().min(0).max(20).default(0),
   notes: z.string().trim().max(2000).nullish(),

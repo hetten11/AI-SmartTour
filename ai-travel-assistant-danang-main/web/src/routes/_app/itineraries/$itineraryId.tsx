@@ -84,6 +84,14 @@ const formatTimeSlot = (iso: string | null) => {
   return d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 };
 
+const toTimeInputValue = (iso: string | null | undefined) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 function ItineraryPage() {
   const { itineraryId } = Route.useParams();
   const navigate = Route.useNavigate();
@@ -99,6 +107,8 @@ function ItineraryPage() {
     orderIndex: "0",
     estimatedCost: "0",
     itemType: "place",
+    startTime: "",
+    endTime: "",
   });
   const [scenario, setScenario] = useState("");
   const [whatIfOpen, setWhatIfOpen] = useState(false);
@@ -107,11 +117,16 @@ function ItineraryPage() {
     diff: ItineraryDiff;
   } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<"custom" | "place" | "event">("custom");
   const [addForm, setAddForm] = useState({
     dayNumber: "1",
     title: "",
+    customAddress: "",
+    itemType: "place",
     eventId: "",
     placeId: "",
+    startTime: "",
+    endTime: "",
     estimatedCost: "",
     notes: "",
     inPlace: true,
@@ -122,7 +137,8 @@ function ItineraryPage() {
   const weather = useQuery(weatherQueryOptions);
   const placeOptions = useQuery(placesQueryOptions({ take: 60 }));
   const startDate = trip.data?.startDate.slice(0, 10) ?? "";
-  const events = useQuery(eventsQueryOptions());
+  // Chỉ lấy các sự kiện đang diễn ra hoặc sắp diễn ra (ẩn hoàn toàn sự kiện đã kết thúc)
+  const events = useQuery(eventsQueryOptions({ hideEnded: true }));
 
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["itinerary", itineraryId] });
@@ -137,12 +153,14 @@ function ItineraryPage() {
         dayNumber: Number(draft.dayNumber),
         orderIndex: Number(draft.orderIndex),
         itemType: draft.itemType,
+        startTime: draft.startTime !== "" ? draft.startTime : undefined,
+        endTime: draft.endTime !== "" ? draft.endTime : undefined,
         estimatedCost: draft.estimatedCost === "" ? 0 : Number(draft.estimatedCost),
       }),
     onSuccess: async () => {
       setEditing(null);
       await refresh();
-      toast.add({ type: "success", title: "Đã cập nhật hoạt động & chi phí" });
+      toast.add({ type: "success", title: "Đã cập nhật hoạt động & sắp xếp lại thời gian" });
     },
   });
 
@@ -180,8 +198,11 @@ function ItineraryPage() {
   const addItem = useMutation({
     mutationFn: () => {
       const knownPlaces = placeOptions.data?.places ?? [];
-      const pickedPlace = knownPlaces.find((place) => place.id === addForm.placeId);
-      const pickedEvent = events.data?.events.find((event) => event.id === addForm.eventId);
+      const activeEvents = (events.data?.events ?? []).filter((e) => e.timeStatus !== "ended");
+      const pickedPlace =
+        addMode === "place" ? knownPlaces.find((place) => place.id === addForm.placeId) : undefined;
+      const pickedEvent =
+        addMode === "event" ? activeEvents.find((event) => event.id === addForm.eventId) : undefined;
       const fallbackTitle =
         pickedEvent?.title ?? pickedPlace?.name ?? "Hoạt động mới";
 
@@ -189,13 +210,21 @@ function ItineraryPage() {
         dayNumber: Number(addForm.dayNumber),
         title: addForm.title.trim() !== "" ? addForm.title.trim() : fallbackTitle,
         itemType:
-          addForm.eventId !== ""
+          addMode === "event"
             ? "event"
-            : pickedPlace?.category === "restaurant" || pickedPlace?.category === "cafe"
-              ? "restaurant"
-              : "place",
-        eventId: addForm.eventId === "" ? null : addForm.eventId,
-        placeId: addForm.placeId === "" ? null : addForm.placeId,
+            : addMode === "place"
+              ? pickedPlace?.category === "restaurant" || pickedPlace?.category === "cafe"
+                ? "restaurant"
+                : "place"
+              : addForm.itemType,
+        eventId: addMode === "event" && addForm.eventId !== "" ? addForm.eventId : null,
+        placeId: addMode === "place" && addForm.placeId !== "" ? addForm.placeId : null,
+        customAddress:
+          addMode === "custom" && addForm.customAddress.trim() !== ""
+            ? addForm.customAddress.trim()
+            : null,
+        startTime: addForm.startTime.trim() !== "" ? addForm.startTime.trim() : null,
+        endTime: addForm.endTime.trim() !== "" ? addForm.endTime.trim() : null,
         estimatedCost: addForm.estimatedCost.trim() === "" ? null : Number(addForm.estimatedCost),
         notes: addForm.notes.trim() || null,
         inPlace: addForm.inPlace,
@@ -206,14 +235,22 @@ function ItineraryPage() {
       setAddForm({
         dayNumber: "1",
         title: "",
+        customAddress: "",
+        itemType: "place",
         eventId: "",
         placeId: "",
+        startTime: "",
+        endTime: "",
         estimatedCost: "",
         notes: "",
         inPlace: true,
       });
       await refresh();
-      toast.add({ type: "success", title: "Đã thêm địa điểm vào lịch trình" });
+      await queryClient.invalidateQueries({ queryKey: ["places"] });
+      toast.add({
+        type: "success",
+        title: "Đã thêm & tự động sắp xếp khung giờ hợp lý trong ngày!",
+      });
       if (result.itinerary.id !== itineraryId) {
         await navigate({
           to: "/itineraries/$itineraryId",
@@ -312,16 +349,24 @@ function ItineraryPage() {
         : [];
     });
 
+  const activeEventList = (events.data?.events ?? []).filter(
+    (event) => event.timeStatus !== "ended",
+  );
+
   const eventItems = [
-    { value: "", label: "Không chọn" },
-    ...(events.data?.events ?? []).map((event) => ({
-      value: event.id,
-      label: `${event.title} · ${formatDate(event.startAt)}`,
-    })),
+    { value: "", label: "Chọn sự kiện đang / sắp diễn ra..." },
+    ...activeEventList.map((event) => {
+      const sTime = formatTimeSlot(event.startAt);
+      const eTime = formatTimeSlot(event.endAt);
+      return {
+        value: event.id,
+        label: `${event.timeStatus === "ongoing" ? "🟢 " : "🔵 "}${event.title} (${sTime ?? ""}${eTime ? `-${eTime}` : ""} · ${formatDate(event.startAt)})`,
+      };
+    }),
   ];
 
   const placeItems = [
-    { value: "", label: "Không chọn" },
+    { value: "", label: "Chọn địa điểm / Đối tác F&B..." },
     ...(placeOptions.data?.places ?? []).map((place) => ({
       value: place.id,
       label: `${place.isSponsored ? "⭐ " : ""}${place.name}${place.estimatedCostVnd ? ` (${formatMoney(place.estimatedCostVnd)})` : ""}`,
@@ -563,6 +608,8 @@ function ItineraryPage() {
                                   orderIndex: String(item.orderIndex),
                                   estimatedCost: String(Number(item.estimatedCost ?? 0)),
                                   itemType: item.itemType,
+                                  startTime: toTimeInputValue(item.startTime),
+                                  endTime: toTimeInputValue(item.endTime),
                                 });
                               }}
                             >
@@ -656,6 +703,26 @@ function ItineraryPage() {
                 />
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="item-start">Giờ bắt đầu</Label>
+                <Input
+                  id="item-start"
+                  type="time"
+                  value={draft.startTime}
+                  onChange={(event) => setDraft({ ...draft, startTime: event.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="item-end">Giờ kết thúc</Label>
+                <Input
+                  id="item-end"
+                  type="time"
+                  value={draft.endTime}
+                  onChange={(event) => setDraft({ ...draft, endTime: event.target.value })}
+                />
+              </div>
+            </div>
             <div className="grid gap-1.5">
               <Label htmlFor="item-notes">Ghi chú</Label>
               <Textarea
@@ -683,112 +750,123 @@ function ItineraryPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Dialog Thêm địa điểm / hoạt động */}
+      {/* Dialog Thêm địa điểm / hoạt động tối giản - AI tự xếp lịch */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Thêm địa điểm / hoạt động vào lịch trình</DialogTitle>
+            <DialogTitle>Thêm vào lịch trình (AI tự động xếp giờ)</DialogTitle>
             <DialogDescription>
-              Chọn từ danh sách địa điểm/sự kiện hệ thống hoặc tự nhập tên. Nếu để trống chi phí, AI sẽ tự động ước tính giá tiền phù hợp.
+              Chỉ cần nhập tên địa điểm hoặc địa chỉ tại Đà Nẵng (hoặc chọn sự kiện), AI sẽ tự động phân loại, ước tính chi phí, định vị bản đồ và xếp vào khung giờ phù hợp nhất trong ngày.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor="add-day">Ngày thứ</Label>
+          <div className="grid gap-3.5">
+            <div className="grid gap-1.5">
+              <Label htmlFor="add-day">Chọn ngày trong chuyến đi</Label>
+              <select
+                id="add-day"
+                className="border-input h-9 w-full rounded-lg border bg-background px-3 text-sm font-medium"
+                value={addForm.dayNumber}
+                onChange={(event) => setAddForm({ ...addForm, dayNumber: event.target.value })}
+              >
+                {days.map((d) => (
+                  <option key={d} value={String(d)}>
+                    Ngày {d}
+                    {startDate ? ` (${formatDate(`${dateOfDay(startDate, d)}T00:00:00.000Z`)})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Chuyển nhanh giữa Nhập địa điểm/địa chỉ và Chọn sự kiện */}
+            <div className="grid grid-cols-2 gap-1.5 rounded-lg border bg-muted/40 p-1">
+              <button
+                type="button"
+                onClick={() => setAddMode("custom")}
+                className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition ${
+                  addMode !== "event"
+                    ? "bg-primary text-primary-foreground shadow-xs"
+                    : "hover:bg-background/80"
+                }`}
+              >
+                📍 Nhập tên địa điểm / địa chỉ
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMode("event")}
+                className={`rounded-md px-2.5 py-1.5 text-xs font-medium transition ${
+                  addMode === "event"
+                    ? "bg-primary text-primary-foreground shadow-xs"
+                    : "hover:bg-background/80"
+                }`}
+              >
+                🎉 Chọn Sự kiện ({activeEventList.length})
+              </button>
+            </div>
+
+            {addMode !== "event" ? (
+              <div className="grid gap-2">
+                <Label htmlFor="add-custom-title">Tên địa điểm hoặc Địa chỉ tại Đà Nẵng *</Label>
                 <Input
-                  id="add-day"
-                  type="number"
-                  min={1}
-                  value={addForm.dayNumber}
-                  onChange={(event) => setAddForm({ ...addForm, dayNumber: event.target.value })}
-                />
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="add-cost">Chi phí dự kiến (VNĐ)</Label>
-                <Input
-                  id="add-cost"
-                  type="number"
-                  min={0}
-                  step={10000}
-                  placeholder="Để trống = AI tự tính"
-                  value={addForm.estimatedCost}
+                  id="add-custom-title"
+                  autoFocus
+                  placeholder="VD: Bê Thui Cầu Mống, Chợ Bắc Mỹ An, hoặc 354 Võ Nguyên Giáp..."
+                  value={addForm.title}
                   onChange={(event) =>
-                    setAddForm({ ...addForm, estimatedCost: event.target.value })
+                    setAddForm({
+                      ...addForm,
+                      title: event.target.value,
+                      placeId: "",
+                      eventId: "",
+                    })
                   }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && addForm.title.trim() !== "" && !addItem.isPending) {
+                      e.preventDefault();
+                      addItem.mutate();
+                    }
+                  }}
                 />
+                <p className="text-muted-foreground text-xs">
+                  ✨ AI sẽ tự động nhận diện loại địa điểm, tìm tọa độ bản đồ, tính chi phí dự kiến và xếp vào khung giờ hợp lý nhất trong <strong>Ngày {addForm.dayNumber}</strong>.
+                </p>
               </div>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="add-place">Chọn địa điểm / Đối tác F&B</Label>
-              <Select
-                items={placeItems}
-                value={addForm.placeId}
-                onValueChange={(value) =>
-                  setAddForm({ ...addForm, placeId: String(value), eventId: "" })
-                }
-              >
-                <SelectTrigger id="add-place" className="w-full">
-                  <SelectValue placeholder="Không chọn" />
-                </SelectTrigger>
-                <SelectContent>
-                  {placeItems.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="add-event">Hoặc chọn sự kiện trong chuyến đi</Label>
-              <Select
-                items={eventItems}
-                value={addForm.eventId}
-                onValueChange={(value) =>
-                  setAddForm({ ...addForm, eventId: String(value), placeId: "" })
-                }
-              >
-                <SelectTrigger id="add-event" className="w-full">
-                  <SelectValue placeholder="Không chọn" />
-                </SelectTrigger>
-                <SelectContent>
-                  {eventItems.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="add-title">
-                Tên hoạt động (bỏ trống sẽ lấy theo tên địa điểm/sự kiện)
-              </Label>
-              <Input
-                id="add-title"
-                placeholder="VD: Thưởng thức hải sản biển Mỹ Khê..."
-                value={addForm.title}
-                onChange={(event) => setAddForm({ ...addForm, title: event.target.value })}
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="add-notes">Ghi chú</Label>
-              <Input
-                id="add-notes"
-                placeholder="Ghi chú giờ giấc, món ăn..."
-                value={addForm.notes}
-                onChange={(event) => setAddForm({ ...addForm, notes: event.target.value })}
-              />
-            </div>
-            <label className="flex items-center gap-2 text-xs">
-              <input
-                type="checkbox"
-                checked={addForm.inPlace}
-                onChange={(e) => setAddForm({ ...addForm, inPlace: e.target.checked })}
-              />
-              <span>Thêm trực tiếp vào phiên bản lịch trình hiện tại (bỏ tích để tạo phiên bản mới)</span>
-            </label>
+            ) : (
+              <div className="grid gap-2">
+                <Label htmlFor="add-event">
+                  Chọn sự kiện đang / sắp diễn ra tại Đà Nẵng
+                </Label>
+                <Select
+                  items={eventItems}
+                  value={addForm.eventId}
+                  onValueChange={(value) => {
+                    const eid = String(value);
+                    const ev = activeEventList.find((e) => e.id === eid);
+                    setAddForm({
+                      ...addForm,
+                      eventId: eid,
+                      placeId: "",
+                      title: ev ? ev.title : "",
+                      startTime: ev ? toTimeInputValue(ev.startAt) : "",
+                      endTime: ev?.endAt ? toTimeInputValue(ev.endAt) : "",
+                    });
+                  }}
+                >
+                  <SelectTrigger id="add-event" className="w-full">
+                    <SelectValue placeholder="Chọn sự kiện..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {eventItems.map((item) => (
+                      <SelectItem key={item.value} value={item.value}>
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-muted-foreground text-xs">
+                  ⏰ Sự kiện đã kết thúc tự động được ẩn đi. Khi chọn sự kiện, hệ thống tự xếp đúng khung giờ diễn ra của sự kiện vào <strong>Ngày {addForm.dayNumber}</strong>.
+                </p>
+              </div>
+            )}
           </div>
           {addItem.error ? (
             <p className="text-destructive text-sm">{errorMessage(addItem.error)}</p>
@@ -797,8 +875,15 @@ function ItineraryPage() {
             <Button variant="outline" onClick={() => setAddOpen(false)}>
               Huỷ
             </Button>
-            <Button disabled={addItem.isPending} onClick={() => addItem.mutate()}>
-              {addItem.isPending ? "Đang thêm..." : "Thêm vào lịch trình"}
+            <Button
+              disabled={
+                addItem.isPending ||
+                (addMode !== "event" && addForm.title.trim() === "") ||
+                (addMode === "event" && addForm.eventId === "")
+              }
+              onClick={() => addItem.mutate()}
+            >
+              {addItem.isPending ? "AI đang xếp lịch..." : "✨ AI Tự xếp vào lịch trình"}
             </Button>
           </DialogFooter>
         </DialogContent>

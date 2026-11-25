@@ -1,6 +1,7 @@
 import { AppError } from "../../common/http-error.ts";
 import { prisma } from "../../config/prisma.ts";
 import type { Prisma } from "../../generated/prisma/client.ts";
+import { describeEventSchedule } from "../events/events.service.ts";
 import { fetchSourceEvents } from "./sync.sources.ts";
 import type { NormalizedEvent } from "./sync.sources.ts";
 
@@ -55,7 +56,15 @@ const severityOf = (item: { startTime: Date | null }, now: number): number => {
 export const notifyImpact = async (eventId: string) => {
   const event = await prisma.event.findUnique({
     where: { id: eventId },
-    select: { id: true, title: true, currentVersion: true },
+    select: {
+      id: true,
+      title: true,
+      venue: true,
+      startAt: true,
+      endAt: true,
+      isActive: true,
+      currentVersion: true,
+    },
   });
   if (!event) return 0;
 
@@ -65,6 +74,8 @@ export const notifyImpact = async (eventId: string) => {
     select: { id: true, changeType: true },
   });
   if (!version) return 0;
+
+  const schedule = describeEventSchedule(event);
 
   const items = await prisma.itineraryItem.findMany({
     where: { eventId },
@@ -84,14 +95,21 @@ export const notifyImpact = async (eventId: string) => {
 
   for (const item of items) {
     const severity = severityOf(item, now);
-    const description = `Sự kiện "${event.title}" đã ${version.changeType === "created" ? "được thêm" : "thay đổi"}`;
+    const actionLabel =
+      version.changeType === "created"
+        ? "được thêm mới"
+        : version.changeType === "cancelled" || !event.isActive
+          ? "đã bị tạm dừng/huỷ"
+          : "đã cập nhật thời gian";
+    const description = `Sự kiện "${event.title}" ${actionLabel}`;
+    const detailedBody = `Lịch trình "${item.itinerary.trip.title ?? "chưa đặt tên"}" (Ngày ${item.dayNumber}) · ${schedule.statusDetailText} · Thời gian: ${schedule.timeRangeText}${event.venue ? ` tại ${event.venue}` : ""}.`;
     const impact = await prisma.impactDetection.create({
       data: {
         eventVersionId: version.id,
         itineraryId: item.itinerary.id,
         itineraryItemId: item.id,
         severity,
-        description,
+        description: `${description}. ${schedule.fullScheduleText}`,
       },
     });
     await prisma.notification.create({
@@ -101,7 +119,7 @@ export const notifyImpact = async (eventId: string) => {
         impactId: impact.id,
         type: "event_change",
         title: description,
-        body: `Lịch trình "${item.itinerary.trip.title ?? "chưa đặt tên"}" cần xem lại ngày ${item.dayNumber}.`,
+        body: detailedBody,
       },
     });
     created += 1;

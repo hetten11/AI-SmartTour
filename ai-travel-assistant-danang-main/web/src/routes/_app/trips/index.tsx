@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/components/ui/toast";
 import {
   Select,
   SelectContent,
@@ -56,15 +57,41 @@ function TripsPage() {
   const query = useQuery(tripsQueryOptions);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<TripInput>(emptyTrip);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const create = useMutation({
     mutationFn: createTrip,
     onSuccess: async () => {
       setOpen(false);
       setForm(emptyTrip);
+      setValidationError(null);
       await queryClient.invalidateQueries({ queryKey: ["trips"] });
+      toast.add({ type: "success", title: "Đã tạo chuyến đi mới thành công" });
     },
   });
+
+  const handleSubmit = () => {
+    if (form.title.trim() === "") {
+      const msg = "Vui lòng nhập tên chuyến đi trước khi tạo!";
+      setValidationError(msg);
+      toast.add({ type: "warning", title: "Thiếu tên chuyến đi", description: msg });
+      return;
+    }
+    if (form.startDate === "" || form.endDate === "") {
+      const msg = "Vui lòng chọn đầy đủ ngày bắt đầu và ngày kết thúc!";
+      setValidationError(msg);
+      toast.add({ type: "warning", title: "Thiếu ngày đi", description: msg });
+      return;
+    }
+    if (form.endDate < form.startDate) {
+      const msg = "Ngày kết thúc phải bằng hoặc sau ngày bắt đầu!";
+      setValidationError(msg);
+      toast.add({ type: "warning", title: "Ngày đi không hợp lệ", description: msg });
+      return;
+    }
+    setValidationError(null);
+    create.mutate(form);
+  };
 
   const remove = useMutation({
     mutationFn: deleteTrip,
@@ -166,11 +193,15 @@ function TripsPage() {
 
           <div className="grid gap-4">
             <div className="grid gap-1.5">
-              <Label htmlFor="trip-title">Tên chuyến đi</Label>
+              <Label htmlFor="trip-title">Tên chuyến đi *</Label>
               <Input
                 id="trip-title"
+                placeholder="VD: Khám phá Đà Nẵng 4 ngày 3 đêm..."
                 value={form.title}
-                onChange={(event) => set("title", event.target.value)}
+                onChange={(event) => {
+                  set("title", event.target.value);
+                  if (validationError) setValidationError(null);
+                }}
               />
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
@@ -283,17 +314,28 @@ function TripsPage() {
             </div>
           </div>
 
+          {validationError ? (
+            <p className="text-destructive font-medium text-sm" role="alert">
+              ⚠️ {validationError}
+            </p>
+          ) : null}
           {create.error ? (
             <p className="text-destructive text-sm">{errorMessage(create.error)}</p>
           ) : null}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setOpen(false);
+                setValidationError(null);
+              }}
+            >
               Huỷ
             </Button>
             <Button
               disabled={create.isPending}
-              onClick={() => create.mutate(form)}
+              onClick={handleSubmit}
             >
               {create.isPending ? "Đang lưu..." : "Lưu chuyến đi"}
             </Button>

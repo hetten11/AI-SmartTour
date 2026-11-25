@@ -4,6 +4,7 @@ import { parseInput, readUuidParam } from "../../common/validate.ts";
 import { getWeatherRange } from "../../common/weather.ts";
 import { prisma } from "../../config/prisma.ts";
 import { listEventsInRange } from "../events/events.service.ts";
+import { inferDaNangDistrict } from "../sync/crawler.service.ts";
 import {
   addItemSchema,
   generateSchema,
@@ -624,6 +625,7 @@ export const updateItem = async (
   body: unknown,
 ) => {
   const itinerary = await itineraryOf(userId, itineraryId);
+  const trip = await prisma.trip.findUniqueOrThrow({ where: { id: itinerary.tripId } });
   const id = readUuidParam(itemId, "hoạt động");
   const item = itinerary.items.find((row) => row.id === id);
   if (!item) throw new AppError(404, "Không tìm thấy hoạt động trong lịch trình này");
@@ -632,8 +634,18 @@ export const updateItem = async (
   const targetDay = input.dayNumber ?? item.dayNumber;
   const targetOrder = input.orderIndex ?? item.orderIndex;
 
+  let nextStart = input.startTime;
+  let nextEnd = input.endTime;
+  if (nextStart instanceof Date) {
+    const hm = getVnHourMinute(nextStart);
+    nextStart = makeSlotDate(trip.startDate, targetDay, hm.hour, hm.minute);
+  }
+  if (nextEnd instanceof Date) {
+    const hm = getVnHourMinute(nextEnd);
+    nextEnd = makeSlotDate(trip.startDate, targetDay, hm.hour, hm.minute);
+  }
+
   await prisma.$transaction(async (tx) => {
-    // Đẩy tạm sang orderIndex lớn để không đụng unique constraint khi đổi ngày/thứ tự
     await tx.itineraryItem.update({
       where: { id },
       data: {
@@ -644,21 +656,37 @@ export const updateItem = async (
         ...(input.placeId !== undefined ? { placeId: input.placeId ?? null } : {}),
         ...(input.eventId !== undefined ? { eventId: input.eventId ?? null } : {}),
         ...(input.notes !== undefined ? { notes: input.notes ?? null } : {}),
-        ...(input.startTime !== undefined ? { startTime: input.startTime ?? null } : {}),
-        ...(input.endTime !== undefined ? { endTime: input.endTime ?? null } : {}),
+        ...(nextStart !== undefined ? { startTime: nextStart ?? null } : {}),
+        ...(nextEnd !== undefined ? { endTime: nextEnd ?? null } : {}),
         ...(input.estimatedCost !== undefined ? { estimatedCost: input.estimatedCost ?? 0 } : {}),
       },
     });
 
-    const dayItems = await tx.itineraryItem.findMany({
-      where: { itineraryId: itinerary.id, dayNumber: targetDay, id: { not: id } },
-      orderBy: { orderIndex: "asc" },
-    });
-    const clampedIndex = Math.max(0, Math.min(targetOrder, dayItems.length));
-    const orderedIds = dayItems.map((r) => r.id);
-    orderedIds.splice(clampedIndex, 0, id);
+    if (nextStart !== undefined && input.orderIndex === undefined) {
+      // Nếu người dùng đổi giờ bắt đầu, tự động xếp lại theo thứ tự thời gian trong ngày
+      const allDayRows = await tx.itineraryItem.findMany({
+        where: { itineraryId: itinerary.id, dayNumber: targetDay },
+      });
+      const chronologicalIds = [...allDayRows]
+        .sort((a, b) => {
+          const tA = a.startTime ? new Date(a.startTime).getTime() : Number.MAX_SAFE_INTEGER;
+          const tB = b.startTime ? new Date(b.startTime).getTime() : Number.MAX_SAFE_INTEGER;
+          if (tA !== tB) return tA - tB;
+          return a.orderIndex - b.orderIndex;
+        })
+        .map((r) => r.id);
+      await resequenceDayTx(tx, itinerary.id, targetDay, chronologicalIds);
+    } else {
+      const dayItems = await tx.itineraryItem.findMany({
+        where: { itineraryId: itinerary.id, dayNumber: targetDay, id: { not: id } },
+        orderBy: { orderIndex: "asc" },
+      });
+      const clampedIndex = Math.max(0, Math.min(targetOrder, dayItems.length));
+      const orderedIds = dayItems.map((r) => r.id);
+      orderedIds.splice(clampedIndex, 0, id);
+      await resequenceDayTx(tx, itinerary.id, targetDay, orderedIds);
+    }
 
-    await resequenceDayTx(tx, itinerary.id, targetDay, orderedIds);
     if (targetDay !== item.dayNumber) {
       await resequenceDayTx(tx, itinerary.id, item.dayNumber);
     }
@@ -939,6 +967,256 @@ export const deleteItinerary = async (userId: string, itineraryId: unknown) => {
   await prisma.itinerary.delete({ where: { id: itinerary.id } });
 };
 
+// Tự động nhận diện loại địa điểm, tìm trong DB hoặc Geocode tọa độ (OpenStreetMap Nominatim)
+// khi khách chỉ nhập tên địa điểm hoặc địa chỉ bất kỳ tại Đà Nẵng
+const resolveOrGeocodeCustomPlace = async (
+  rawInput: string,
+  customAddress?: string | null,
+): Promise<{
+  id: string;
+  name: string;
+  category: string;
+  itemType: "place" | "restaurant" | "activity";
+  district: string;
+  address: string;
+} | null> => {
+  const cleanTitle = rawInput.trim();
+  if (cleanTitle.length < 2) return null;
+
+  const toItemType = (cat: string): "place" | "restaurant" | "activity" => {
+    if (cat === "restaurant" || cat === "cafe") return "restaurant";
+    if (cat === "activity") return "activity";
+    return "place";
+  };
+
+  // 1. Tìm thử trong bảng places theo cả Tên lẫn Địa chỉ
+  const existing = await prisma.place.findFirst({
+    where: {
+      isActive: true,
+      OR: [
+        { name: { equals: cleanTitle, mode: "insensitive" } },
+        { name: { contains: cleanTitle, mode: "insensitive" } },
+        { address: { contains: cleanTitle, mode: "insensitive" } },
+      ],
+    },
+  });
+  if (existing) {
+    return {
+      id: existing.id,
+      name: existing.name,
+      category: existing.category,
+      itemType: toItemType(existing.category),
+      district: existing.district ?? "Đà Nẵng",
+      address: existing.address ?? `${existing.district ?? "Đà Nẵng"}`,
+    };
+  }
+
+  // 2. Gọi OpenStreetMap Nominatim Geocoding API giới hạn trong khu vực Đà Nẵng
+  let lat = 16.0611 + (Math.random() - 0.5) * 0.015;
+  let lon = 108.2275 + (Math.random() - 0.5) * 0.015;
+  let address = customAddress?.trim() ? `${customAddress.trim()}, Đà Nẵng` : `${cleanTitle}, Đà Nẵng`;
+
+  try {
+    const searchQuery = customAddress?.trim()
+      ? `${cleanTitle}, ${customAddress.trim()}, Đà Nẵng, Việt Nam`
+      : `${cleanTitle}, Đà Nẵng, Việt Nam`;
+    const queryUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+      searchQuery,
+    )}&limit=1`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(queryUrl, {
+      headers: {
+        "User-Agent": "SmartTourAI-DaNang-Capstone/1.2",
+        "Accept-Language": "vi",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (res.ok) {
+      const results = (await res.json()) as Array<{
+        lat?: string;
+        lon?: string;
+        display_name?: string;
+      }>;
+      const hit = results[0];
+      if (hit?.lat && hit?.lon) {
+        const parsedLat = Number(hit.lat);
+        const parsedLon = Number(hit.lon);
+        if (parsedLat >= 15.8 && parsedLat <= 16.25 && parsedLon >= 107.9 && parsedLon <= 108.4) {
+          lat = Number(parsedLat.toFixed(6));
+          lon = Number(parsedLon.toFixed(6));
+          if (!customAddress?.trim() && hit.display_name) {
+            address = hit.display_name.split(",").slice(0, 3).join(",").trim();
+          }
+        }
+      }
+    }
+  } catch {
+    // Fallback an toàn về tọa độ trung tâm Đà Nẵng nếu mạng chặn Nominatim
+  }
+
+  const district = inferDaNangDistrict(lat, lon, address);
+  const lower = cleanTitle.toLowerCase();
+  const category =
+    lower.includes("cà phê") || lower.includes("cafe") || lower.includes("coffee") || lower.includes("chè") || lower.includes("trà")
+      ? "cafe"
+      : lower.includes("quán") ||
+          lower.includes("nhà hàng") ||
+          lower.includes("ăn") ||
+          lower.includes("hải sản") ||
+          lower.includes("bê thui") ||
+          lower.includes("mì quảng") ||
+          lower.includes("bánh") ||
+          lower.includes("bún") ||
+          lower.includes("lẩu") ||
+          lower.includes("nướng")
+        ? "restaurant"
+        : lower.includes("biển") || lower.includes("bãi")
+          ? "beach"
+          : lower.includes("chợ")
+            ? "market"
+            : lower.includes("chùa") || lower.includes("đền") || lower.includes("nhà thờ")
+              ? "temple"
+              : lower.includes("bảo tàng")
+                ? "museum"
+                : "attraction";
+
+  const created = await prisma.place.create({
+    data: {
+      name: cleanTitle,
+      category,
+      district,
+      address,
+      description: `Địa điểm tại ${address} (${district}, Đà Nẵng).`,
+      latitude: lat,
+      longitude: lon,
+      priceLevel: category === "restaurant" ? 2 : 1,
+      estimatedCostVnd:
+        category === "restaurant"
+          ? 150000
+          : category === "cafe"
+            ? 55000
+            : category === "beach" || category === "temple"
+              ? 0
+              : 60000,
+      avgRating: 4.6,
+      tags: ["tự thêm", district.toLowerCase()],
+      isActive: true,
+    },
+  });
+
+  return {
+    id: created.id,
+    name: created.name,
+    category,
+    itemType: toItemType(category),
+    district,
+    address,
+  };
+};
+
+// Lấy giờ (0..23) và phút theo múi giờ Việt Nam (UTC+7) từ một đối tượng Date
+const getVnHourMinute = (date: Date): { hour: number; minute: number } => {
+  const vnTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+  return {
+    hour: vnTime.getUTCHours(),
+    minute: vnTime.getUTCMinutes(),
+  };
+};
+
+// AI / Thuật toán tự động phân bổ khung giờ phù hợp nhất trong ngày theo đặc thù địa điểm
+const resolveSmartTimeSlot = async (
+  tripStart: Date,
+  dayNumber: number,
+  input: {
+    startTime?: Date | null;
+    endTime?: Date | null;
+    eventId?: string | null;
+    category?: string;
+    itemType?: string;
+    title: string;
+  },
+  existingDayItems: Array<{ startTime: Date | null; endTime: Date | null }>,
+): Promise<{ startTime: Date; endTime: Date }> => {
+  // 1. Nếu có giờ chỉ định sẵn
+  if (input.startTime) {
+    const { hour, minute } = getVnHourMinute(input.startTime);
+    const start = makeSlotDate(tripStart, dayNumber, hour, minute);
+    if (input.endTime) {
+      const endHM = getVnHourMinute(input.endTime);
+      const end = makeSlotDate(tripStart, dayNumber, endHM.hour, endHM.minute);
+      if (end.getTime() > start.getTime()) {
+        return { startTime: start, endTime: end };
+      }
+    }
+    return {
+      startTime: start,
+      endTime: makeSlotDate(tripStart, dayNumber, Math.min(22, hour + 2), minute),
+    };
+  }
+
+  // 2. Nếu là Sự kiện (eventId): lấy đúng khung giờ bắt đầu & kết thúc thật của sự kiện đó!
+  if (input.eventId) {
+    const ev = await prisma.event.findUnique({
+      where: { id: input.eventId },
+      select: { startAt: true, endAt: true },
+    });
+    if (ev) {
+      const startHM = getVnHourMinute(ev.startAt);
+      const clampedStartHour = Math.max(7, Math.min(22, startHM.hour));
+      const start = makeSlotDate(tripStart, dayNumber, clampedStartHour, startHM.minute);
+
+      if (ev.endAt) {
+        const endHM = getVnHourMinute(ev.endAt);
+        const durationHours = (ev.endAt.getTime() - ev.startAt.getTime()) / (60 * 60 * 1000);
+        if (durationHours > 0 && durationHours <= 4 && endHM.hour >= clampedStartHour) {
+          return {
+            startTime: start,
+            endTime: makeSlotDate(tripStart, dayNumber, Math.min(23, endHM.hour), endHM.minute),
+          };
+        }
+      }
+      return {
+        startTime: start,
+        endTime: makeSlotDate(tripStart, dayNumber, Math.min(23, clampedStartHour + 2), startHM.minute),
+      };
+    }
+  }
+
+  // 3. Tự động chọn khung giờ thông minh theo tính chất địa điểm (ăn sáng/cà phê, ăn trưa, tắm biển chiều, ăn tối/chợ đêm)
+  const usedHours = new Set<number>();
+  for (const item of existingDayItems) {
+    if (item.startTime) {
+      usedHours.add(getVnHourMinute(item.startTime).hour);
+    }
+  }
+
+  const lower = input.title.toLowerCase();
+  const cat = input.category ?? input.itemType ?? "place";
+
+  let preferredHours: number[];
+  if (lower.includes("chợ đêm") || lower.includes("du thuyền") || lower.includes("cầu rồng") || lower.includes("hải sản")) {
+    preferredHours = [19, 18, 20, 17, 12];
+  } else if (cat === "cafe" || lower.includes("cà phê") || lower.includes("cafe") || lower.includes("ăn sáng") || lower.includes("bún") || lower.includes("mì quảng")) {
+    preferredHours = [8, 9, 15, 16, 10, 14];
+  } else if (cat === "restaurant" || lower.includes("quán") || lower.includes("nhà hàng") || lower.includes("bê thui") || lower.includes("bánh tráng")) {
+    preferredHours = [12, 11, 18, 19, 13, 17];
+  } else if (cat === "beach" || lower.includes("biển")) {
+    preferredHours = [16, 17, 7, 8, 15];
+  } else {
+    preferredHours = [9, 10, 14, 15, 16, 8, 19];
+  }
+
+  const chosenHour = preferredHours.find((h) => !usedHours.has(h)) ?? preferredHours[0] ?? 15;
+  const startMinute = usedHours.has(chosenHour) ? 30 : 0;
+  const duration = cat === "cafe" ? 1 : 2;
+  const start = makeSlotDate(tripStart, dayNumber, chosenHour, startMinute);
+  const end = makeSlotDate(tripStart, dayNumber, Math.min(22, chosenHour + duration), startMinute);
+  return { startTime: start, endTime: end };
+};
+
 export const addItem = async (userId: string, itineraryId: unknown, body: unknown) => {
   const itinerary = await itineraryOf(userId, itineraryId);
   const trip = await prisma.trip.findUniqueOrThrow({
@@ -947,43 +1225,96 @@ export const addItem = async (userId: string, itineraryId: unknown, body: unknow
   });
   const partySize = Math.max(1, trip.adults + trip.children + trip.companions.length);
   const input = parseInput(addItemSchema, body);
+
+  // Tự động nhận diện và Geocode địa điểm từ tên hoặc địa chỉ người dùng nhập
+  let resolvedPlaceId = input.placeId ?? null;
+  let resolvedCategory: string | undefined;
+  let resolvedItemType = input.itemType;
+  let autoNote = input.notes ?? null;
+
+  if (!resolvedPlaceId && !input.eventId) {
+    const resolved = await resolveOrGeocodeCustomPlace(input.title, input.customAddress);
+    if (resolved) {
+      resolvedPlaceId = resolved.id;
+      resolvedCategory = resolved.category;
+      resolvedItemType = resolved.itemType;
+      if (!autoNote) {
+        autoNote = `📍 ${resolved.address} · AI tự động xếp khung giờ phù hợp`;
+      }
+    }
+  }
+
   const [known] = await keepKnownIds(
     [
       {
         ...input,
-        placeId: input.placeId ?? null,
+        itemType: resolvedItemType,
+        placeId: resolvedPlaceId,
         eventId: input.eventId ?? null,
+        notes: autoNote,
       },
     ],
     partySize,
   );
   if (!known) throw new AppError(400, "Dữ liệu hoạt động không hợp lệ");
 
-  // Mặc định sửa trực tiếp (inPlace = true) để người dùng thêm/bớt/sửa linh hoạt ngay trên bản hiện tại
+  const existingDayItems = itinerary.items.filter((i) => i.dayNumber === known.dayNumber);
+  const { startTime, endTime } = await resolveSmartTimeSlot(
+    trip.startDate,
+    known.dayNumber,
+    {
+      startTime: known.startTime,
+      endTime: known.endTime,
+      eventId: known.eventId,
+      category: resolvedCategory,
+      itemType: known.itemType,
+      title: known.title,
+    },
+    existingDayItems,
+  );
+
+  // Mặc định sửa trực tiếp (inPlace = true) và tự động sắp xếp lại thứ tự trong ngày theo đúng giờ bắt đầu (startTime ASC)
   if (input.inPlace !== false) {
-    const dayItemsCount = itinerary.items.filter((i) => i.dayNumber === known.dayNumber).length;
-    await prisma.itineraryItem.create({
-      data: {
-        itineraryId: itinerary.id,
-        dayNumber: known.dayNumber,
-        orderIndex: dayItemsCount,
-        itemType: known.itemType,
-        placeId: known.placeId ?? null,
-        eventId: known.eventId ?? null,
-        title: known.title,
-        startTime: known.startTime ?? makeSlotDate(trip.startDate, known.dayNumber, 9 + dayItemsCount * 3, 0),
-        endTime: known.endTime ?? makeSlotDate(trip.startDate, known.dayNumber, 11 + dayItemsCount * 3, 0),
-        estimatedCost: known.estimatedCost ?? 0,
-        notes: known.notes ?? null,
-      },
+    await prisma.$transaction(async (tx) => {
+      await tx.itineraryItem.create({
+        data: {
+          itineraryId: itinerary.id,
+          dayNumber: known.dayNumber,
+          orderIndex: 9999,
+          itemType: known.itemType,
+          placeId: known.placeId ?? null,
+          eventId: known.eventId ?? null,
+          title: known.title,
+          startTime,
+          endTime,
+          estimatedCost: known.estimatedCost ?? 0,
+          notes: known.notes ?? null,
+        },
+      });
+
+      // Sắp xếp lại toàn bộ hoạt động trong ngày đó theo thứ tự thời gian (Sáng -> Trưa -> Chiều -> Tối)
+      const dayRows = await tx.itineraryItem.findMany({
+        where: { itineraryId: itinerary.id, dayNumber: known.dayNumber },
+      });
+      const chronologicalIds = [...dayRows]
+        .sort((a, b) => {
+          const tA = a.startTime ? new Date(a.startTime).getTime() : Number.MAX_SAFE_INTEGER;
+          const tB = b.startTime ? new Date(b.startTime).getTime() : Number.MAX_SAFE_INTEGER;
+          if (tA !== tB) return tA - tB;
+          return a.orderIndex - b.orderIndex;
+        })
+        .map((r) => r.id);
+
+      await resequenceDayTx(tx, itinerary.id, known.dayNumber, chronologicalIds);
     });
+
     await syncTotalCost(itinerary.id);
     return itineraryOf(userId, itinerary.id);
   }
 
   return newVersionFrom(
     itinerary,
-    [...itemsOf(itinerary), known],
+    [...itemsOf(itinerary), { ...known, startTime, endTime }],
     input.notes
       ? `Thêm "${input.title}": ${input.notes}`
       : `Thêm "${input.title}" vào ngày ${input.dayNumber}`,
@@ -1044,7 +1375,7 @@ export const generateItinerary = async (userId: string, tripId: unknown, body: u
     `3. Tự động dự toán và gán chi phí "estimatedCost" (bằng số tiền VNĐ cho cả đoàn ${partySize} người) phù hợp cho từng hoạt động dựa trên trường estimatedCostVnd của địa điểm.`,
     "4. Khi đề xuất quán ăn (restaurant) hoặc cà phê (cafe), ƯU TIÊN chọn các địa điểm có isSponsored = true (Đối tác F&B đề xuất).",
     `Địa điểm hệ thống: ${JSON.stringify(
-      places.slice(0, 50).map((place) => ({
+      places.slice(0, 22).map((place) => ({
         id: place.id,
         name: place.name,
         district: place.district,
@@ -1055,7 +1386,7 @@ export const generateItinerary = async (userId: string, tripId: unknown, body: u
     )}`,
     events.length > 0
       ? `Sự kiện trong chuyến đi: ${JSON.stringify(
-          events.slice(0, 15).map((event) => ({
+          events.slice(0, 8).map((event) => ({
             id: event.id,
             title: event.title,
             venue: event.venue,
@@ -1142,7 +1473,7 @@ export const whatIf = async (userId: string, tripId: unknown, body: unknown) => 
     `Đảm bảo mỗi ngày (từ ngày 1 đến ngày ${days}) vẫn có ít nhất 3-4 hoạt động và đầy đủ estimatedCost (VNĐ).`,
     "Khi đổi sang quán ăn/cà phê, ưu tiên các địa điểm có isSponsored = true.",
     `Địa điểm: ${JSON.stringify(
-      places.slice(0, 45).map((place) => ({
+      places.slice(0, 22).map((place) => ({
         id: place.id,
         name: place.name,
         district: place.district,
@@ -1151,23 +1482,34 @@ export const whatIf = async (userId: string, tripId: unknown, body: unknown) => 
         isSponsored: place.isSponsored,
       })),
     )}`,
-    `Sự kiện: ${JSON.stringify(events.map((event) => ({ id: event.id, title: event.title, venue: event.venue, startAt: event.startAt })))}`,
+    `Sự kiện: ${JSON.stringify(events.slice(0, 8).map((event) => ({ id: event.id, title: event.title, venue: event.venue, startAt: event.startAt })))}`,
     'Trả về DUY NHẤT JSON dạng {"title": string, "reason": string, "items": [{"dayNumber": number, "title": string, "itemType": "place|restaurant|activity|event|transport|rest", "placeId": string|null, "eventId": string|null, "startTime": string|null, "endTime": string|null, "estimatedCost": number|null, "notes": string|null}]}.',
   ]
     .filter(Boolean)
     .join("\n");
 
-  const parsed = await askJson(prompt);
-  const plan = planSchema.safeParse(parsed);
-  if (!plan.success) throw new AppError(502, "AI trả về dữ liệu không hợp lệ, thử lại");
+  let aiItems: PlanInput["items"] = [];
+  let aiReason = `Kịch bản: ${input.scenario}`;
+  try {
+    const parsed = await askJson(prompt);
+    const plan = planSchema.safeParse(parsed);
+    if (plan.success) {
+      aiItems = plan.data.items;
+      if (plan.data.reason) aiReason = plan.data.reason;
+    }
+  } catch (err) {
+    console.warn("[whatIf] AI timeout/error, dùng bộ điều chỉnh chuẩn hoá:", err);
+    // Giữ một nửa hoạt động đầu của mỗi ngày và lấp hoạt động mới phù hợp kịch bản
+    aiItems = itemsOf(source).filter((_, idx) => idx % 2 === 0);
+  }
 
-  const known = dropDuplicates(await keepKnownIds(plan.data.items, partySize));
+  const known = dropDuplicates(await keepKnownIds(aiItems, partySize));
   const completeItems = ensureMinItemsPerDay(known, days, trip.startDate, places, [], partySize);
 
   const created = await newVersionFrom(
     { ...source, chatSessionId: input.chatSessionId ?? source.chatSessionId },
     completeItems,
-    plan.data.reason ?? `Kịch bản: ${input.scenario}`,
+    aiReason,
   );
 
   const diff = await diffItineraries(userId, source.id, created.id);

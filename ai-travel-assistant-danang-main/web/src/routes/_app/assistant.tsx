@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { MessageSquarePlus, Pencil, Trash2 } from "lucide-react";
@@ -47,10 +47,13 @@ export const Route = createFileRoute("/_app/assistant")({
 });
 
 const presets = [
-  { title: "Trời mưa", text: "Trời mưa thì nên đi đâu ở Đà Nẵng?" },
-  { title: "Sự kiện", text: "Cuối tuần này có sự kiện gì?" },
-  { title: "Lịch trình", text: "Lên lịch trình cho chuyến đi này" },
-  { title: "Khẩn cấp", text: "Tôi bị mất hộ chiếu, phải làm gì?" },
+  {
+    title: "⭐ Ẩm thực & Đối tác F&B",
+    text: "Gợi ý các quán ăn đặc sản và cà phê Đối tác F&B nổi bật ở Đà Nẵng kèm giá dự kiến?",
+  },
+  { title: "🌧️ Trời mưa", text: "Trời mưa thì nên đi đâu ở Đà Nẵng?" },
+  { title: "🎉 Sự kiện", text: "Cuối tuần này có sự kiện gì ở Đà Nẵng?" },
+  { title: "📅 Lịch trình", text: "Lên lịch trình chi tiết kèm chi phí cho chuyến đi này" },
 ];
 
 // Gemini trả Markdown. Chỉ dựng vài dạng cần dùng (đậm, code, gạch đầu dòng,
@@ -156,25 +159,41 @@ function MessageFooter({
   role,
   createdAt,
   toolCalls,
+  boundTripId,
 }: {
   role: string;
   createdAt: string;
   toolCalls: string[] | null;
+  boundTripId?: string | null;
 }) {
+  const savedItinerary = (toolCalls ?? []).includes("save_itinerary");
   return (
-    <div
-      className={
-        role === "user"
-          ? "text-primary-foreground/70 mt-2 flex flex-wrap items-center justify-end gap-1.5 text-[11px]"
-          : "text-muted-foreground mt-2 flex flex-wrap items-center gap-1.5 text-[11px]"
-      }
-    >
-      <span>{formatDateTime(createdAt)}</span>
-      {(toolCalls ?? []).map((tool: string) => (
-        <Badge key={tool} variant="outline" className="text-[10px] font-normal">
-          {tool}
-        </Badge>
-      ))}
+    <div className="mt-2 grid gap-2">
+      {role === "assistant" && savedItinerary && boundTripId ? (
+        <div className="pt-1">
+          <Button
+            size="sm"
+            variant="default"
+            render={<Link to="/trips/$tripId" params={{ tripId: boundTripId }} />}
+          >
+            📅 Mở xem Lịch trình & Bản đồ vừa tạo
+          </Button>
+        </div>
+      ) : null}
+      <div
+        className={
+          role === "user"
+            ? "text-primary-foreground/70 flex flex-wrap items-center justify-end gap-1.5 text-[11px]"
+            : "text-muted-foreground flex flex-wrap items-center gap-1.5 text-[11px]"
+        }
+      >
+        <span>{formatDateTime(createdAt)}</span>
+        {[...new Set(toolCalls ?? [])].map((tool: string) => (
+          <Badge key={tool} variant="outline" className="text-[10px] font-normal">
+            {tool}
+          </Badge>
+        ))}
+      </div>
     </div>
   );
 }
@@ -203,12 +222,6 @@ function AssistantPage() {
     ...chatMessagesQueryOptions(sessionId === "" ? "none" : sessionId),
     enabled: sessionId !== "",
   });
-
-  // Chưa chọn phiên thì mở phiên mới nhất.
-  useEffect(() => {
-    const first = sessions.data?.[0];
-    if (!sessionParam && first) void navigate({ search: { session: first.id } });
-  }, [navigate, sessionParam, sessions.data]);
 
   const refreshSessions = () =>
     queryClient.invalidateQueries({ queryKey: ["chat-sessions"] });
@@ -247,12 +260,46 @@ function AssistantPage() {
     onSuccess: refreshSessions,
   });
 
+  // Nếu chưa có phiên chat nào (hoặc danh sách trống), tự động tạo 1 phiên mới để người dùng chat được ngay.
+  const autoCreatedRef = useRef(false);
+  useEffect(() => {
+    if (sessions.isPending || createSession.isPending) return;
+    const list = sessions.data ?? [];
+    const first = list[0];
+    if (!sessionParam && first) {
+      void navigate({ search: { session: first.id } });
+    } else if (list.length === 0 && !autoCreatedRef.current) {
+      autoCreatedRef.current = true;
+      createSession.mutate();
+    }
+  }, [navigate, sessionParam, sessions.data, sessions.isPending, createSession]);
+
+  // Nếu người dùng chưa gắn chuyến đi cho phiên chat nhưng tài khoản đã có sẵn chuyến đi,
+  // tự động gắn chuyến đi mới nhất vào phiên để khi bấm "Lên lịch trình" là chạy được ngay.
+  const autoBoundSessionRef = useRef<string>("");
+  useEffect(() => {
+    const currentSession = sessions.data?.find((row) => row.id === sessionId);
+    const firstTrip = trips.data?.[0];
+    if (
+      currentSession &&
+      currentSession.tripId === null &&
+      firstTrip &&
+      !bindTrip.isPending &&
+      autoBoundSessionRef.current !== currentSession.id
+    ) {
+      autoBoundSessionRef.current = currentSession.id;
+      bindTrip.mutate(firstTrip.id);
+    }
+  }, [sessionId, sessions.data, trips.data, bindTrip]);
+
   const send = useMutation({
     mutationFn: (text: string) => sendSessionMessage(sessionId, text),
     onError: (_error, text) => setContent((current) => (current === "" ? text : current)),
     onSuccess: async (data) => {
       setTruncated(data.truncated);
       await queryClient.invalidateQueries({ queryKey: ["chat", sessionId] });
+      await queryClient.invalidateQueries({ queryKey: ["itineraries"] });
+      await queryClient.invalidateQueries({ queryKey: ["trips"] });
       await refreshSessions();
     },
   });
@@ -556,6 +603,7 @@ function AssistantPage() {
                       role={message.role}
                       createdAt={message.createdAt}
                       toolCalls={message.toolCalls}
+                      boundTripId={session?.tripId}
                     />
                   </div>
                 </div>

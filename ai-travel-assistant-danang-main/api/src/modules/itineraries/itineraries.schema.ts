@@ -83,6 +83,7 @@ export const addItemSchema = z.object({
     .default("activity"),
   placeId: z.string().regex(parseUuid).nullish(),
   eventId: z.string().regex(parseUuid).nullish(),
+  customAddress: z.string().trim().max(255).nullish(),
   startTime: flexibleTime,
   endTime: flexibleTime,
   estimatedCost: z.coerce.number().min(0).max(1_000_000_000).nullish(),
