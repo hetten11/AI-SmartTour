@@ -239,7 +239,13 @@ const STOP_WORDS = new Set([
   "tiết",
   "cụ",
   "thể",
+  "thánh",
   "địa",
+  "khu",
+  "đền",
+  "tháp",
+  "phố",
+  "cổ",
   "điểm",
   "danh",
   "lam",
@@ -284,40 +290,31 @@ const keywordFallbackSearch = async (query: string, limit: number): Promise<Know
     .filter((w) => w.length >= 2)
     .slice(0, 5);
 
-  // Chỉ khớp khi chứa CẢ CỤM TỪ CHÍNH (cleanPhrase) hoặc chứa ĐỒNG THỜI tất cả các từ khóa trong cụm (AND),
-  // tuyệt đối không dùng chỉ 1 chữ lẻ (words[0] như "mỹ") tránh khớp nhầm "Mỹ sơn" -> "Mỹ Khê"!
+  // Chỉ khớp nguyên cụm danh từ chính xác (cleanPhrase) trên tiêu đề hoặc nội dung,
+  // và ưu tiên những bản ghi có tiêu đề khớp trực tiếp với cụm từ lên đầu.
   const rows = await prisma.knowledgeChunk.findMany({
     where: {
       isActive: true,
       OR: [
         { title: { contains: cleanPhrase, mode: "insensitive" } },
         { content: { contains: cleanPhrase, mode: "insensitive" } },
-        ...(words.length >= 2
-          ? [
-              {
-                AND: words.map((w) => ({
-                  OR: [
-                    { title: { contains: w, mode: "insensitive" as const } },
-                    { content: { contains: w, mode: "insensitive" as const } },
-                  ],
-                })),
-              },
-            ]
-          : []),
       ],
     },
-    take: limit,
+    take: limit * 2,
   });
 
   if (rows.length > 0) {
-    return rows.map((r, idx) => ({
+    const phraseLower = cleanPhrase.toLowerCase();
+    const titleMatched = rows.filter((r) => (r.title ?? "").toLowerCase().includes(phraseLower));
+    const prioritized = titleMatched.length > 0 ? titleMatched : rows;
+    return prioritized.slice(0, limit).map((r, idx) => ({
       id: r.id,
       title: r.title,
       content: r.content,
       sourceType: r.sourceType,
       placeId: r.placeId,
       eventId: r.eventId,
-      distance: 0.25 + idx * 0.05,
+      distance: 0.2 + idx * 0.05,
     }));
   }
 

@@ -11,14 +11,8 @@ export const listPlaces = async (query: Record<string, unknown>) => {
   const page = readIntQuery(query.page, 0, 500);
   const take = query.take ? Math.min(Math.max(Number(query.take) || pageSize, 1), 100) : pageSize;
 
-  const words = q
-    ? q
-        .trim()
-        .split(/\s+/)
-        .filter((w) => w.length >= 2)
-        .slice(0, 5)
-    : [];
-
+  // Khớp nguyên cụm từ chính xác (Exact Phrase Match) trên tên, khu vực, địa chỉ, thẻ hoặc mô tả.
+  // Tuyệt đối KHÔNG tách "mỹ sơn" thành 2 từ rời "mỹ" VÀ "sơn" (vì sẽ bắt nhầm địa điểm ở quận Sơn Trà có phường Phước Mỹ!).
   const where = {
     isActive: true,
     ...(district ? { district } : {}),
@@ -28,33 +22,17 @@ export const listPlaces = async (query: Record<string, unknown>) => {
       ? {
           OR: [
             { name: { contains: q, mode: "insensitive" as const } },
-            { description: { contains: q, mode: "insensitive" as const } },
-            { address: { contains: q, mode: "insensitive" as const } },
             { district: { contains: q, mode: "insensitive" as const } },
+            { address: { contains: q, mode: "insensitive" as const } },
             { tags: { has: q.toLowerCase() } },
-            ...(words.length >= 2
-              ? [
-                  {
-                    AND: words.map((w) => ({
-                      OR: [
-                        { name: { contains: w, mode: "insensitive" as const } },
-                        { description: { contains: w, mode: "insensitive" as const } },
-                        { address: { contains: w, mode: "insensitive" as const } },
-                        { district: { contains: w, mode: "insensitive" as const } },
-                      ],
-                    })),
-                  },
-                ]
-              : []),
+            { description: { contains: q, mode: "insensitive" as const } },
           ],
         }
       : {}),
   };
 
-  // Cơ chế ưu tiên (Sponsored / Featured Listing):
-  // Các địa điểm/quán ăn F&B đã ký hợp đồng tài trợ (isSponsored = true) được ưu tiên
-  // đẩy lên đầu danh sách theo mức độ ưu tiên (sponsorPriority), sau đó mới tới điểm đánh giá.
-  const [places, total] = await Promise.all([
+  // Cơ chế ưu tiên (Sponsored / Featured Listing) + Ưu tiên khớp Tên chính xác nhất lên đầu:
+  const [rawPlaces, total] = await Promise.all([
     prisma.place.findMany({
       where,
       orderBy: [
@@ -68,6 +46,23 @@ export const listPlaces = async (query: Record<string, unknown>) => {
     }),
     prisma.place.count({ where }),
   ]);
+
+  // Nếu có từ khoá tìm kiếm `q`, ưu tiên địa điểm có Tên hoặc Quận khớp trực tiếp với `q` lên đầu tiên
+  // (trước các địa điểm chỉ nhắc tới `q` trong phần mô tả phụ).
+  const qLower = q?.toLowerCase();
+  const places = qLower
+    ? [...rawPlaces].sort((a, b) => {
+        const aNameMatch = a.name.toLowerCase().includes(qLower) ? 1 : 0;
+        const bNameMatch = b.name.toLowerCase().includes(qLower) ? 1 : 0;
+        if (aNameMatch !== bNameMatch) return bNameMatch - aNameMatch;
+
+        const aDistMatch = (a.district ?? "").toLowerCase().includes(qLower) ? 1 : 0;
+        const bDistMatch = (b.district ?? "").toLowerCase().includes(qLower) ? 1 : 0;
+        if (aDistMatch !== bDistMatch) return bDistMatch - aDistMatch;
+
+        return 0;
+      })
+    : rawPlaces;
 
   return { places, total, page, pageSize: take };
 };

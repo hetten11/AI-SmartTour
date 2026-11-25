@@ -242,7 +242,7 @@ export const sendMessage = async (userId: string, sessionId: unknown, body: unkn
               `- **${p.name}**${p.isSponsored ? " ⭐ *(Đối tác F&B Đề xuất)*" : ""} (${p.district ?? "Đà Nẵng"}) — Chi phí dự kiến: **${(p.estimatedCostVnd ?? 80000).toLocaleString("vi-VN")} ₫/người**`,
           ),
           ...(chunks.length > 0
-            ? ["\n**Kinh nghiệm hữu ích từ Cẩm nang Đà Nẵng:**", `- ${chunks[0]!.content.slice(0, 320)}...`]
+            ? ["\n**Kinh nghiệm hữu ích từ Cẩm nang Đà Nẵng:**", `- ${chunks[0]!.content}`]
             : []),
         ].join("\n");
       } else if (/(ăn|quán|nhà hàng|cà phê|cafe|đặc sản|hải sản|mì quảng|bánh tráng|f&b|đối tác)/i.test(qLower)) {
@@ -286,18 +286,29 @@ export const sendMessage = async (userId: string, sessionId: unknown, body: unkn
         usedTools.push("search_knowledge", "search_places");
 
         if (chunks.length > 0 || res.places.length > 0) {
+          const cleanLower = cleanQuery.toLowerCase();
+          // Nếu có địa điểm khớp trực tiếp ở Tên hoặc Quận/Khu vực (ví dụ hỏi đích danh "Mỹ Sơn", "Chùa Linh Ứng", "Hội An"),
+          // chỉ hiển thị đúng các địa điểm khớp trực tiếp đó, không lôi các địa điểm khác chỉ vô tình nhắc tới trong mô tả!
+          const directMatches = res.places.filter(
+            (p) =>
+              p.name.toLowerCase().includes(cleanLower) ||
+              (p.district ?? "").toLowerCase().includes(cleanLower) ||
+              p.tags.some((t) => t.toLowerCase().includes(cleanLower)),
+          );
+          const placesToShow = directMatches.length > 0 ? directMatches : res.places;
+
           const lines: string[] = [
             `📍 **Thông tin tra cứu thực tế tại TP. Đà Nẵng mới (bao gồm khu vực Quảng Nam sáp nhập) cho "${cleanQuery}":**`,
           ];
-          if (res.places.length > 0) {
-            for (const p of res.places.slice(0, 5)) {
+          if (placesToShow.length > 0) {
+            for (const p of placesToShow.slice(0, 5)) {
               lines.push(
                 `- **${p.name}**${p.isSponsored ? " ⭐ *(Đối tác F&B Đề xuất)*" : ""} — Khu vực: **${p.district ?? "Đà Nẵng"}** (${p.address ?? "TP. Đà Nẵng"})\n  📝 ${p.description ?? ""}\n  💰 Chi phí dự kiến: **${(p.estimatedCostVnd ?? 100000).toLocaleString("vi-VN")} ₫/người** · Đánh giá: **${p.avgRating ?? "4.8"}★**`,
               );
             }
           } else if (chunks.length > 0) {
             for (const c of chunks.slice(0, 3)) {
-              lines.push(`- **${c.title ?? "Cẩm nang du lịch Đà Nẵng"}:** ${c.content.slice(0, 380)}`);
+              lines.push(`- **${c.title ?? "Cẩm nang du lịch Đà Nẵng"}:**\n${c.content}`);
             }
           }
           reply = lines.join("\n");
