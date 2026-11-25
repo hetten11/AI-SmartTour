@@ -448,18 +448,55 @@ const ensureMinItemsPerDay = (
       });
     }
 
-    // Gán khung giờ mặc định cho các item trong ngày nếu AI quên trả startTime/endTime
+    // Chuẩn hoá & chống trùng giờ tuyệt đối cho toàn bộ các hoạt động trong cùng một ngày:
+    // Nếu có bất kỳ hoạt động nào bị trùng khung giờ (ví dụ 2 quán ăn cùng rơi vào 12:00 - 13:30
+    // hoặc 2 điểm tham quan cùng rơi vào 09:00 - 11:30), tự động phân bổ các hoạt động trong ngày
+    // vào dãy khung giờ nối tiếp nhau từ Sáng -> Trưa -> Chiều -> Tối -> Đêm mà không bao giờ đè lên nhau!
     const finalDayItems = result.filter((item) => item.dayNumber === day);
-    finalDayItems.forEach((item, idx) => {
-      const fallbackHours = [8, 12, 15, 19, 21];
-      const h = fallbackHours[idx % fallbackHours.length] ?? 9;
-      if (!item.startTime) {
-        item.startTime = makeSlotDate(tripStart, day, h, 0);
-      }
-      if (!item.endTime) {
-        item.endTime = makeSlotDate(tripStart, day, Math.min(23, h + 2), 0);
-      }
+    const nonOverlappingSlots = [
+      { startH: 8, startM: 30, endH: 11, endM: 0 }, // #1: Buổi sáng (08:30 - 11:00)
+      { startH: 11, startM: 30, endH: 13, endM: 30 }, // #2: Buổi trưa (11:30 - 13:30)
+      { startH: 14, startM: 30, endH: 17, endM: 30 }, // #3: Buổi chiều (14:30 - 17:30)
+      { startH: 18, startM: 30, endH: 20, endM: 30 }, // #4: Buổi tối (18:30 - 20:30)
+      { startH: 20, startM: 45, endH: 22, endM: 30 }, // #5: Dạo đêm (20:45 - 22:30)
+      { startH: 22, startM: 30, endH: 23, endM: 45 }, // #6: Hoạt động khuya (22:30 - 23:45)
+    ];
+
+    // Sắp xếp ưu tiên theo giờ gợi ý ban đầu để điểm tham quan buổi sáng vẫn đứng trước bữa trưa / bữa tối
+    finalDayItems.sort((a, b) => {
+      const aMs = a.startTime ? new Date(a.startTime).getTime() : 0;
+      const bMs = b.startTime ? new Date(b.startTime).getTime() : 0;
+      return aMs - bMs;
     });
+
+    // Kiểm tra xem trong ngày có item nào thiếu giờ hoặc bị trùng/chồng lấn giờ với item trước đó không
+    let hasMissingOrOverlap = false;
+    for (let idx = 0; idx < finalDayItems.length; idx += 1) {
+      const cur = finalDayItems[idx]!;
+      if (!cur.startTime || !cur.endTime) {
+        hasMissingOrOverlap = true;
+        break;
+      }
+      if (idx > 0) {
+        const prev = finalDayItems[idx - 1]!;
+        const prevEnd = prev.endTime ? new Date(prev.endTime).getTime() : 0;
+        const curStart = new Date(cur.startTime).getTime();
+        if (curStart < prevEnd) {
+          hasMissingOrOverlap = true;
+          break;
+        }
+      }
+    }
+
+    if (hasMissingOrOverlap) {
+      finalDayItems.forEach((item, idx) => {
+        const slot =
+          nonOverlappingSlots[idx] ??
+          nonOverlappingSlots[nonOverlappingSlots.length - 1]!;
+        item.startTime = makeSlotDate(tripStart, day, slot.startH, slot.startM);
+        item.endTime = makeSlotDate(tripStart, day, slot.endH, slot.endM);
+      });
+    }
   }
 
   return result;

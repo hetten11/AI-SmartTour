@@ -1,5 +1,12 @@
-export const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : "Có lỗi xảy ra, thử lại";
+export const errorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    if (error.message === "Failed to fetch" || error.message.includes("NetworkError")) {
+      return "";
+    }
+    return error.message;
+  }
+  return "Có lỗi xảy ra, thử lại";
+};
 
 const toDdMmYy = (date: Date): string => {
   const dd = String(date.getDate()).padStart(2, "0");

@@ -11,6 +11,14 @@ export const listPlaces = async (query: Record<string, unknown>) => {
   const page = readIntQuery(query.page, 0, 500);
   const take = query.take ? Math.min(Math.max(Number(query.take) || pageSize, 1), 100) : pageSize;
 
+  const words = q
+    ? q
+        .trim()
+        .split(/\s+/)
+        .filter((w) => w.length >= 2)
+        .slice(0, 5)
+    : [];
+
   const where = {
     isActive: true,
     ...(district ? { district } : {}),
@@ -22,7 +30,22 @@ export const listPlaces = async (query: Record<string, unknown>) => {
             { name: { contains: q, mode: "insensitive" as const } },
             { description: { contains: q, mode: "insensitive" as const } },
             { address: { contains: q, mode: "insensitive" as const } },
+            { district: { contains: q, mode: "insensitive" as const } },
             { tags: { has: q.toLowerCase() } },
+            ...(words.length >= 2
+              ? [
+                  {
+                    AND: words.map((w) => ({
+                      OR: [
+                        { name: { contains: w, mode: "insensitive" as const } },
+                        { description: { contains: w, mode: "insensitive" as const } },
+                        { address: { contains: w, mode: "insensitive" as const } },
+                        { district: { contains: w, mode: "insensitive" as const } },
+                      ],
+                    })),
+                  },
+                ]
+              : []),
           ],
         }
       : {}),

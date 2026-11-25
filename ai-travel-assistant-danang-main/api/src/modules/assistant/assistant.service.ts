@@ -21,7 +21,9 @@ const messageSchema = z.object({
   content: z.string().trim().min(1, "Nội dung không được để trống").max(2000),
 });
 
-// Tối đa 2 vòng gọi tool (1 vòng gọi song song các tool + 1 vòng tổng hợp) để phản hồi cực nhanh
+// Cờ đồng bộ 1 lần trong phiên chạy server để đảm bảo toàn bộ mô tả chi tiết (ngày thành lập, lịch sử, kiến trúc...)
+// luôn được cập nhật vào PostgreSQL ngay trong lần chat đầu tiên.
+let enrichedPlacesSynced = false;
 const maxSteps = 2;
 const historySize = 8;
 const titleLength = 60;
@@ -257,6 +259,12 @@ export const sendMessage = async (userId: string, sessionId: unknown, body: unkn
           ),
         ].join("\n");
       } else {
+        if (!enrichedPlacesSynced) {
+          enrichedPlacesSynced = true;
+          await crawlDaNangPlaces({ includeOsm: false })
+            .then(() => reindexAll())
+            .catch(() => {});
+        }
         const cleanQuery = extractCleanSearchPhrase(input.content);
         let [chunks, res] = await Promise.all([
           searchKnowledge(cleanQuery, 4).catch(() => []),

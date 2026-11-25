@@ -48,11 +48,11 @@ export const startSyncCron = async () => {
     console.warn("[sync] không thể kiểm tra nguồn mặc định:", err);
   });
 
-  // Khởi tạo dữ liệu địa điểm & đối tác F&B mẫu (bao gồm cả khu vực Quảng Nam sáp nhập vào TP. Đà Nẵng mới)
+  // Khởi tạo & cập nhật dữ liệu địa điểm (bao gồm thông tin ngày thành lập, lịch sử, kiến trúc & khu vực sáp nhập)
   // rồi cập nhật lại chỉ mục RAG knowledge_chunks để AI Chatbot tra cứu được ngay
   void crawlDaNangPlaces({ includeOsm: false })
     .then((res) => {
-      if (res.created > 0) {
+      if (res.created > 0 || res.updated > 0) {
         return reindexAll();
       }
       return null;

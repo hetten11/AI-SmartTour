@@ -397,11 +397,6 @@ function AssistantPage() {
             ))
           )}
         </div>
-        {createSession.error || bindTrip.error ? (
-          <p className="text-destructive text-xs">
-            {errorMessage(createSession.error ?? bindTrip.error)}
-          </p>
-        ) : null}
       </aside>
 
       <Dialog
